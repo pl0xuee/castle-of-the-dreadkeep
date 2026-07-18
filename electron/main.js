@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, protocol, Menu } = require('electron');
+const { app, BrowserWindow, protocol, Menu, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 
@@ -102,11 +102,55 @@ app.whenReady().then(() => {
 
   Menu.setApplicationMenu(null);
   createWindow();
+  setupAutoUpdates();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Auto-update via electron-updater against the GitHub Releases feed configured
+// in package.json ("build".publish). On launch (and periodically) the app checks
+// the latest release; a newer build downloads in the background and, once ready,
+// the player is offered a restart to install. Failures are logged and swallowed —
+// a missed update check must never block or crash the game.
+// ---------------------------------------------------------------------------
+function setupAutoUpdates() {
+  // electron-updater is a no-op unless the app is packaged (there is no installed
+  // app to replace in dev), so skip it entirely when running from source.
+  if (!app.isPackaged) return;
+
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = require('electron-updater'));
+  } catch (err) {
+    return; // module missing (e.g. running unpacked) — nothing to do
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', () => { /* swallow: never interrupt play on a failed check */ });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    dialog.showMessageBox({
+      type: 'info',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Update ready',
+      message: `Castle of the Dreadkeep ${info.version} is ready to install.`,
+      detail: 'Restart the game to apply the update. It will otherwise install automatically next time you quit.'
+    }).then((res) => {
+      if (res.response === 0) autoUpdater.quitAndInstall();
+    }).catch(() => {});
+  });
+
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  // Re-check every 6 hours for long-running sessions.
+  setInterval(check, 6 * 60 * 60 * 1000);
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

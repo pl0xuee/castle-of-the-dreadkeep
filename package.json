@@ -12,6 +12,9 @@
     "dist:win": "electron-builder --win nsis --x64 --publish never",
     "dist:all": "electron-builder --linux AppImage --win nsis --x64 --publish never"
   },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
@@ -23,6 +26,14 @@
       "output": "release",
       "buildResources": "build"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "pl0xuee",
+        "repo": "castle-of-the-dreadkeep"
+      }
+    ],
+    "artifactName": "${name}-${version}.${ext}",
     "files": [
       "electron/**/*",
       "index.html",

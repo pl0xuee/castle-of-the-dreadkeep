@@ -18,11 +18,18 @@ jobs:
           - os: ubuntu-latest
             name: linux
             build: npm run dist:linux
-            artifact: release/*.AppImage
+            # Installer + the electron-updater feed metadata (blockmap is optional).
+            artifact: |
+              release/*.AppImage
+              release/latest-linux.yml
+              release/*.blockmap
           - os: windows-latest
             name: windows
             build: npm run dist:win
-            artifact: release/*.exe
+            artifact: |
+              release/*.exe
+              release/latest.yml
+              release/*.blockmap
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +54,9 @@ jobs:
           path: ${{ matrix.artifact }}
           if-no-files-found: error
 
-  # On a version tag (e.g. v1.1.1) publish a GitHub Release with both installers.
+  # On a version tag (e.g. v1.1.2) publish a GitHub Release with both installers
+  # plus the electron-updater feed metadata (latest*.yml + blockmaps) so the
+  # in-app auto-updater can find and verify new builds.
   release:
     name: Publish release
     needs: build
@@ -65,9 +74,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          shopt -s nullglob
+          files=(
+            dist/dreadkeep-linux/*.AppImage
+            dist/dreadkeep-linux/*.yml
+            dist/dreadkeep-linux/*.blockmap
+            dist/dreadkeep-windows/*.exe
+            dist/dreadkeep-windows/*.yml
+            dist/dreadkeep-windows/*.blockmap
+          )
+          echo "Publishing ${#files[@]} files:"; printf '  %s\n' "${files[@]}"
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/dreadkeep-linux/*.AppImage \
-            dist/dreadkeep-windows/*.exe
+            "${files[@]}"

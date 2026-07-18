@@ -4059,54 +4059,26 @@ function initSector93() {
     }
     if(rooms.length<2) return LEVELS[idx%LEVELS.length]; // fallback
 
-    // Connect rooms with L-corridors
+    // ── A→B spine: order the chambers left→right so the level reads as a route ──
+    // The rooms were scattered across the left zone; sorting them by column turns
+    // them into a directed sequence from the spawn (far left) toward the barrier
+    // gate (right). Connecting each room to the next then guarantees one clear main
+    // path the player follows through the keep — a genuine A→B, not a maze.
+    rooms.sort((a,b)=> (a.cx-b.cx) || (a.cz-b.cz));
     for(let i=0;i<rooms.length-1;i++) {
       const a=rooms[i], b=rooms[i+1];
-      if(rng(i+500)<0.5){ carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz); }
-      else               { carveV(a.cx,a.cz,b.cz); carveH(b.cz,a.cx,b.cx); }
-    }
-    
-    // ── Extra cross-connections for higher complexity ──────────────────
-    const extraConnections = Math.min(Math.floor(idx/2), rooms.length-2);
-    for(let c=0;c<extraConnections;c++){
-      const i1=rndInt(600+c*37, 0, rooms.length-2);
-      const i2=rndInt(700+c*37, i1+1, rooms.length-1);
-      const a=rooms[i1], b=rooms[i2];
-      // 50/50 which corridor axis comes first
-      if(rng(800+c)<0.5){ carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz); }
-      else               { carveV(a.cx,a.cz,b.cz); carveH(b.cz,a.cx,b.cx); }
-    }
-    
-    // ── Add maze-like dead ends at higher levels ─────────────────────
-    const mazeComplexity = Math.min(3 + Math.floor(idx/3), 14);
-    for(let m=0;m<mazeComplexity;m++){
-      const roomIdx = rndInt(1200+m*17, 1, rooms.length-1);
-      const r = rooms[roomIdx];
-      // Pick random edge of room and carve a short dead-end corridor
-      const edge = rndInt(1300+m*17, 0, 3); // 0=north, 1=east, 2=south, 3=west
-      const length = rndInt(1400+m*17, 2, 4);
-      if(edge===0){ // north
-        for(let i=0;i<length;i++) if(r.cz-i-1>0) carveH(r.cz-i-1, r.cx-1, r.cx+1);
-      } else if(edge===1){ // east
-        for(let i=0;i<length;i++) if(r.cx+i+1<W-1) carveV(r.cx+i+1, r.cz-1, r.cz+1);
-      } else if(edge===2){ // south
-        for(let i=0;i<length;i++) if(r.cz+i+1<H-1) carveH(r.cz+i+1, r.cx-1, r.cx+1);
-      } else { // west
-        for(let i=0;i<length;i++) if(r.cx-i-1>0) carveV(r.cx-i-1, r.cz-1, r.cz+1);
-      }
+      // Horizontal leg first keeps the feeling of pushing rightward, deeper in.
+      carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz);
     }
 
-    // ── Secret passages — punch surprise shortcuts through walls ──────
-    const secretCount = 2 + Math.floor(idx/2);
-    let _spa = 0, _spm = 0;
-    while(_spm < secretCount && _spa < 300) {
-      _spa++;
-      const spx = rndInt(2000+_spa*3, 2, W-3);
-      const spz = rndInt(2001+_spa*3, 2, H-3);
-      if(!isSolid(map[spz][spx])) continue;
-      const fL=spx>0&&!isSolid(map[spz][spx-1]), fR=spx<W-1&&!isSolid(map[spz][spx+1]);
-      const fU=spz>0&&!isSolid(map[spz-1][spx]), fD=spz<H-1&&!isSolid(map[spz+1][spx]);
-      if((fL&&fR)||(fU&&fD)){ map[spz][spx]=0; _spm++; }
+    // A few optional loop-backs between nearby chambers give room to dodge and
+    // reposition in a fight, without dead ends or random secret tunnels (those made
+    // the old layouts read as noise instead of a place).
+    const loopCount = Math.min(1 + Math.floor(idx/6), 3);
+    for(let c=0;c<loopCount && rooms.length>=3;c++){
+      const i1=rndInt(600+c*37, 0, rooms.length-3);
+      const a=rooms[i1], b=rooms[i1+2];     // skip a room to form a genuine loop
+      carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz);
     }
 
     // ── Gate corridor through barrier ────────────────────────────────
@@ -4307,7 +4279,12 @@ function initSector93() {
     }
 
     // ── Fireplaces ────────────────────────────────────────────────────
-    const fireplaces = rooms.length>1 ? [{x:rooms[Math.floor(rooms.length/2)].cx, z:rooms[Math.floor(rooms.length/2)].cz}] : [];
+    // Anchor the hearth in the largest chamber along the route so it reads as a
+    // great hall the player passes through, not a random cell.
+    const area = r => (r.x2-r.x1)*(r.z2-r.z1);
+    const midRooms = rooms.slice(1, Math.max(2, rooms.length-1));
+    const hallRoom = (midRooms.length?midRooms:rooms).reduce((big,r)=>area(r)>area(big)?r:big);
+    const fireplaces = rooms.length>1 ? [{x:hallRoom.cx, z:hallRoom.cz}] : [];
 
     // ── Atmosphere cycles through 3 moods ─────────────────────────────
     const atm = idx%3;

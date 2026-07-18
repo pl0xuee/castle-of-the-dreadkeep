@@ -1,7 +1,19 @@
 # Castle of the Dreadkeep
 
+[![Build](https://github.com/pl0xuee/castle-of-the-dreadkeep/actions/workflows/build.yml/badge.svg)](https://github.com/pl0xuee/castle-of-the-dreadkeep/actions/workflows/build.yml)
+
 A procedural medieval castle crawler — a retro raycaster-style FPS built with Three.js.
 Enter the cursed halls, hunt the guardian, and escape the Dreadkeep alive.
+
+## Download
+
+Grab a prebuilt standalone from the
+[**Releases**](https://github.com/pl0xuee/castle-of-the-dreadkeep/releases) page:
+
+- **Windows** — `Castle of the Dreadkeep Setup <version>.exe`
+- **Linux** — `Castle of the Dreadkeep-<version>.AppImage` (`chmod +x`, then run)
+
+Every push builds both; tagging `vX.Y.Z` publishes them to a release.
 
 ## Run
 

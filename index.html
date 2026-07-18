@@ -462,6 +462,11 @@ function initSector93() {
     fiend:   { hp:6, spd:1.6,  dmg:16, acd:0.95, ar:1.15, sx:1.08, sy:1.0,  col:0x5a1010 },
     goliath: { hp:16,spd:0.52, dmg:30, acd:1.85, ar:1.3,  sx:1.25, sy:1.18, col:0x0a0a14 },
     miniboss:{ hp:19,spd:0.68, dmg:28, acd:1.95, ar:1.4,  sx:1.22, sy:1.2,  col:0x2a0a2a },
+    // Warlock — a robed caster that hurls fireballs from range (see the `ranged`
+    // branch in updateEnemies). Fragile up close; dangerous if left to line you up.
+    warlock: { hp:5, spd:0.95, dmg:12, acd:1.7,  ar:1.0,  sx:0.98, sy:1.06, col:0x3a1630, ranged:true },
+    // Hound — a fast, low-HP melee swarmer. Cheap individually, deadly in a pack.
+    hound:   { hp:3, spd:2.15, dmg:8,  acd:0.75, ar:1.0,  sx:1.06, sy:0.72, col:0x241612 },
   };
 
   // Bow tiers. A volley's rays each seek a *different* enemy (see the `killed`
@@ -574,6 +579,7 @@ function initSector93() {
       {name:'The Hexer',tint:0x75e69b,stats:{hp:19,spd:0.62,dmg:26,acd:1.05,ar:1.35,sx:1.2,sy:1.24}},
       {name:'The Dread Knight',tint:0xff4d70,stats:{hp:21,spd:0.76,dmg:33,acd:1.55,ar:1.55,sx:1.34,sy:1.3}},
       {name:'The Colossus',tint:0xff7a32,stats:{hp:22,spd:0.42,dmg:36,acd:2.3,ar:1.55,sx:1.48,sy:1.38}},
+      {name:'The Necromancer',tint:0x8fffb0,stats:{hp:19,spd:0.66,dmg:25,acd:1.0,ar:1.4,sx:1.18,sy:1.26}},
     ];
     return variants[level%variants.length];
   }
@@ -611,6 +617,11 @@ function initSector93() {
 
     if (mapSlot === 1 && tier >= 3) pool.push('fiend');
     if (mapSlot === 0 && tier >= 3) pool.push('brute');
+
+    // Fast hounds start swarming early; ranged warlocks join once levels open up.
+    if (tier >= 1) pool.push('hound','hound');
+    if (mapSlot >= 1 && tier >= 2) pool.push('warlock');
+    if (mapSlot >= 2 && tier >= 3) pool.push('warlock','hound');
 
     const filtered = preferHard ? pool.filter(t => t !== 'grunt') : pool;
     return filtered.length ? filtered : pool;
@@ -1330,6 +1341,7 @@ function initSector93() {
     if (dead) {
       const remains={
         grunt:['#18200f','#496b26'], soldier:['#260707','#861818'], brute:['#160b20','#542574'],
+        warlock:['#180a20','#ff8a2a'], hound:['#140d0a','#7a2a18'],
         spectre:['rgba(20,35,70,0.7)','rgba(90,145,220,0.75)'], fiend:['#210303','#85130b'],
         goliath:['#292721','#ff6418'], miniboss:['#180522','#7e2fb0'],
       }[type]||['#1a0a0a','#600000'];
@@ -1449,6 +1461,39 @@ function initSector93() {
       rect(20,62,24,3,'#8e45bd');
       for(let i=0;i<4;i++) tri([18+i*9,72,22+i*9,80,26+i*9,72],'#4b1767'); // robe tassels
       ctx.fillStyle='#ffd6ff'; ctx.fillRect(31,4,3,3); // crown jewel
+    } else if (type==='warlock') {
+      // Hooded fire-caster — dark robe, sunken glowing eyes, and a fireball orb
+      // that pulses in its raised hands between frames.
+      ctx.fillStyle='#1e1226'; ctx.beginPath();          // robe hem sways
+      ctx.moveTo(16,42); ctx.lineTo(10+(f?4:0),82); ctx.lineTo(54-(f?4:0),82); ctx.lineTo(48,42); ctx.closePath(); ctx.fill();
+      rect(20,30,24,42,'#2b1834');                        // robe body
+      rect(20,30,24,7,'#1b0f22');                          // shoulder shade
+      ctx.fillStyle='#160b1c'; ctx.beginPath(); ctx.moveTo(20,32); ctx.quadraticCurveTo(32,6,44,32); ctx.closePath(); ctx.fill(); // hood
+      rect(24,18,16,16,'#0e0714');                         // face shadow
+      eye(26,22,6,6,'#ff8a1a','#ffe0a0'); eye(34,22,6,6,'#ff8a1a','#ffe0a0'); // glowing eyes
+      rect(12,38+(f?3:0),9,18,'#241430'); rect(43,38+(f?0:3),9,18,'#241430'); // sleeves reach
+      ctx.fillStyle='#3a2448'; ctx.fillRect(12,54+(f?3:0),9,4); ctx.fillRect(43,54+(f?0:3),9,4); // hands
+      const oy=44+(f?-3:3);                                // conjured orb bobs
+      ctx.fillStyle='rgba(255,150,40,0.5)'; ctx.beginPath(); ctx.ellipse(32,oy,10,10,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ff7a1a'; ctx.beginPath(); ctx.ellipse(32,oy,6,6,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ffe08a'; ctx.beginPath(); ctx.ellipse(32,oy,3,3,0,0,Math.PI*2); ctx.fill();
+      rect(20,60,24,3,'#5a3a20');                          // sash
+      for(let i=0;i<4;i++) tri([18+i*9,72,22+i*9,80,26+i*9,72],'#1b0f22'); // tassels
+    } else if (type==='hound') {
+      // Demonic hound in profile — low, wide, galloping. Legs alternate per frame.
+      rect(18,64,7, f?16:12,'#181010');                    // hind leg
+      rect(24,64,6, f?12:16,'#150d0d');                    // second leg (offset)
+      rect(34,64,7, f?12:16,'#181010');                    // third leg
+      rect(43,64,7, f?16:12,'#181010');                    // fore leg
+      ctx.fillStyle='#241612'; ctx.beginPath(); ctx.ellipse(32,48,22,14,0,0,Math.PI*2); ctx.fill(); // body
+      rect(10,44,11,11,'#1c1310');                          // haunch
+      for(let i=0;i<5;i++) tri([18+i*7,36, 21+i*7,26, 24+i*7,36], '#3a1c14'); // back spikes
+      ctx.fillStyle='#2a1712'; ctx.beginPath(); ctx.ellipse(50,45,12,11,0,0,Math.PI*2); ctx.fill(); // head
+      tri([43,35, 47,25, 51,35], '#3a1c14'); tri([51,35, 55,25, 58,37], '#3a1c14'); // ears
+      eye(45,41,6,5,'#ff3a12','#ffb060');                  // glowing eye
+      rect(52,49,11,5,'#0e0808');                           // maw
+      ctx.fillStyle='#e8dcc8'; ctx.fillRect(54,49,2,4); ctx.fillRect(59,49,2,4); // fangs
+      ctx.strokeStyle='#241612'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(12,44); ctx.lineTo(f?4:6, f?34:38); ctx.stroke(); // tail
     }
     // Soft form shading over the drawn pixels only (source-atop): a warm top rim
     // light, a grounded shadow at the feet, and a gentle left-key / right-fill so
@@ -2374,7 +2419,7 @@ function initSector93() {
     const palettes={
       grunt:[0x314d1f,0x78934b], soldier:[0x741717,0x8c8f96], brute:[0x29143d,0x7b3f87],
       spectre:[0x456aab,0xb5dcff], fiend:[0x690b08,0x2b0505], goliath:[0x4a463b,0xff6818],
-      miniboss:[0x42145f,0xc15dff],
+      miniboss:[0x42145f,0xc15dff], warlock:[0x2a1030,0xff8a2a], hound:[0x1c1210,0x8a2f1a],
     };
     const cols=palettes[type]||palettes.grunt;
     const count=type==='goliath'||type==='miniboss'?12:type==='spectre'?7:9;
@@ -4559,7 +4604,7 @@ function initSector93() {
         spd:  et.spd  * D.spdMult,
         dmg:  Math.max(1,Math.round(et.dmg  * D.dmgMult)),
         acd:  et.acd*0.5+Math.random()*et.acd*0.5,
-        ar:et.ar, bsx:et.sx, bsy:et.sy,
+        ar:et.ar, bsx:et.sx, bsy:et.sy, ranged:!!et.ranged,
         hx:sp.x, hz:sp.z, px:sp.x, pz:sp.z,
         stuckT:0, avoidT:0, lunge:0, wA:Math.random()*Math.PI*2, wT:0,
         turnBias:Math.random()<0.5?-1:1,
@@ -4842,7 +4887,9 @@ function initSector93() {
         else if(Math.random()<0.12) sfx.mobIdle(d.type,e.position.x,e.position.z);
       }
       d.acd=Math.max(0,d.acd-dt);
-        if (d.type==='miniboss'&&sees&&dist>2.2&&dist<9.5&&d.acd<=0&&player.health>0
+        // Ranged casters (the miniboss and warlocks) hurl a projectile from a
+        // distance instead of closing for melee.
+        if ((d.type==='miniboss'||d.ranged)&&sees&&dist>2.2&&dist<9.5&&d.acd<=0&&player.health>0
           &&hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
         d.attackFlash=0.32;
         sfx.spellCast(e.position.x,e.position.z);

@@ -1,0 +1,52 @@
+{
+  "name": "castle-of-the-dreadkeep",
+  "productName": "Castle of the Dreadkeep",
+  "version": "1.1.2",
+  "description": "A procedural medieval castle crawler — a retro raycaster-style FPS built with Three.js.",
+  "author": "Dreadkeep Games",
+  "license": "MIT",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:linux": "electron-builder --linux AppImage --x64",
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist:all": "electron-builder --linux AppImage --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.dreadkeep.castle",
+    "productName": "Castle of the Dreadkeep",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "index.html",
+      "assets/**/*",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Game",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

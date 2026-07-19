@@ -411,7 +411,13 @@ function initSector93() {
   let composer=null, bloomPass=null, smaaPass=null;
   const AA_SAMPLES={off:0,msaa2:2,msaa4:4,smaa:0};
   function buildComposer() {
-    if (composer) { composer.dispose?.(); composer=null; bloomPass=null; smaaPass=null; }
+    if (composer) {
+      // composer.dispose() only frees its own two render targets — each pass
+      // owns further targets/materials that would leak across AA/bloom setting
+      // changes without an explicit dispose.
+      for (const pass of composer.passes) pass.dispose?.();
+      composer.dispose?.(); composer=null; bloomPass=null; smaaPass=null;
+    }
     const size=new THREE.Vector2(); renderer.getSize(size);
     const samples=AA_SAMPLES[settings.aa]??0;
     composer=new EffectComposer(renderer);
@@ -789,6 +795,7 @@ function initSector93() {
   let corridorBands = [];
   let worldW = 0, worldH = 0;
   let currentMapKeys = [];
+  let currentRooms = [];
   let advTimer = null;
   let restartTimer = null;
   let restartStepTimer = null;
@@ -819,6 +826,7 @@ function initSector93() {
   const torches    = [];
   const fireLights = [];
   const fixtureLights = [];
+  const transientLights = [];
   const ceilingDrips = [];
   const mossStrands = [];
   const gates      = [];
@@ -941,17 +949,17 @@ function initSector93() {
   carriedTorchLickA.rotation.z=-0.18;
   carriedTorchLickB.rotation.z=0.22;
   torchRig.add(carriedTorchLickA,carriedTorchLickB);
-  const torchLight=new THREE.PointLight(0xff9b4a,1.18*LIGHT_SOURCE_BOOST,6.4,1.7);
+  const torchLight=new THREE.PointLight(0xff9b4a,1.5*LIGHT_SOURCE_BOOST,8.5,1.5);
   torchLight.position.set(0,0.215,0);
   torchRig.add(torchLight);
-  const torchSpotLight=new THREE.SpotLight(0xffa04b,0.92*LIGHT_SOURCE_BOOST,7.8,1.02,0.96,1.15);
+  const torchSpotLight=new THREE.SpotLight(0xffa04b,1.15*LIGHT_SOURCE_BOOST,10,1.02,0.96,1.15);
   torchSpotLight.position.set(0,0.18,-0.02);
   const torchSpotTarget=new THREE.Object3D();
   torchSpotTarget.position.set(0,0.08,-7.5);
   torchRig.add(torchSpotLight,torchSpotTarget);
   torchSpotLight.target=torchSpotTarget;
-  const torchBaseIntensity=1.18*LIGHT_SOURCE_BOOST;
-  const torchSpotBaseIntensity=0.92*LIGHT_SOURCE_BOOST;
+  const torchBaseIntensity=1.5*LIGHT_SOURCE_BOOST;
+  const torchSpotBaseIntensity=1.15*LIGHT_SOURCE_BOOST;
 
   // Opposite-hand crossbow silhouette. It stays compact so the dungeon view and
   // crosshair remain clear while the weapon still reads at pixel resolution.
@@ -1055,9 +1063,32 @@ function initSector93() {
   rightArm.rotation.z = -0.3;
   playerBody.add(rightArm);
   
-  const ambient = new THREE.AmbientLight(0x4a5672, 0.38 * GLOBAL_LIGHT_BOOST);
+  // First-person rigs are a viewmodel, not part of the world: they draw on
+  // top of the scene (classic FPS style) instead of colliding with or clipping
+  // into walls. depthTest off + late renderOrder keeps them above world
+  // geometry; opaque parts still write depth so world transparencies behind
+  // them don't bleed through. renderOrder follows build order, so parts added
+  // later (flames, glows) layer over the prop bodies.
+  {
+    let heldOrder=1000;
+    for(const rig of [torchRig,crossbowRig,meleeRig]){
+      rig.traverse(o=>{
+        if(!o.isMesh) return;
+        o.renderOrder=heldOrder++;
+        for(const m of [].concat(o.material)){
+          m.depthTest=false;
+          if(m.transparent) m.depthWrite=false;
+        }
+      });
+    }
+  }
+
+  // The flat washes stay low on purpose: darkness should come from absence of
+  // light, and the torches/fireplaces below are strong enough to carve real
+  // pools. Raising these flattens the game back into uniform murk.
+  const ambient = new THREE.AmbientLight(0x4a5672, 0.22 * GLOBAL_LIGHT_BOOST);
   scene.add(ambient);
-  const keyDir  = new THREE.DirectionalLight(0xa9c2ea, 0.42 * GLOBAL_LIGHT_BOOST);
+  const keyDir  = new THREE.DirectionalLight(0xa9c2ea, 0.18 * GLOBAL_LIGHT_BOOST);
   keyDir.position.set(3, 5, 2);
   scene.add(keyDir);
 
@@ -2346,6 +2377,7 @@ function initSector93() {
   }
 
   function disposeTransientObject(root) {
+    unregisterTransientLights(root);
     root.traverse(n=>{
       if (n.geometry) n.geometry.dispose();
       if (n.material) [].concat(n.material).forEach(m=>{
@@ -2362,6 +2394,7 @@ function initSector93() {
     const disposedMaterials=new Set();
     const disposedMaps=new Set();
     levelRoot.traverse(n=>{
+      if (n.isLight&&n.shadow&&n.shadow.map) { n.shadow.map.dispose(); n.shadow.map=null; }
       if (n.geometry&&!disposedGeometries.has(n.geometry)) {
         disposedGeometries.add(n.geometry);
         n.geometry.dispose();
@@ -2380,8 +2413,10 @@ function initSector93() {
     while (levelRoot.children.length) levelRoot.remove(levelRoot.children[0]);
     for(const a of arrows){if(a.mesh&&a.mesh.parent)a.mesh.parent.remove(a.mesh);}
     for(const s of enemySpells){if(s.mesh)disposeTransientObject(s.mesh);}
-    enemies.length=pickups.length=torches.length=fireLights.length=fixtureLights.length=ceilingDrips.length=mossStrands.length=gates.length=gibs.length=arrows.length=enemySpells.length=decorColliders.length=pendingDamage.length=0;
+    for(const g of gibs){if(g.m.parent)g.m.parent.remove(g.m);g.m.geometry.dispose();g.m.material.dispose();}
+    enemies.length=pickups.length=torches.length=fireLights.length=fixtureLights.length=transientLights.length=ceilingDrips.length=mossStrands.length=gates.length=gibs.length=arrows.length=enemySpells.length=decorColliders.length=pendingDamage.length=0;
     currentMapKeys = [];
+    currentRooms = [];
     bossExitRoom = null;
     levelExit={x:1.5,z:1.5,group:null,glow:null,seed:Math.random()*Math.PI*2};
     if (advTimer) { clearTimeout(advTimer); advTimer=null; }
@@ -2475,6 +2510,7 @@ function initSector93() {
     g.add(core,shell,glow);
     g.position.copy(origin);
     scene.add(g);
+    registerTransientLight(glow);
     enemySpells.push({mesh:g,vel:dir.multiplyScalar(5.8),life:3.1,damage:Math.max(10,Math.round(enemy.userData.dmg*0.65))});
   }
 
@@ -2678,7 +2714,7 @@ function initSector93() {
         const trim=wallClearanceAt(x,z);
         const wx=(x+0.5)+trim.ox+d.dx*trim.sx*0.5+d.dx*0.02;
         const wz=(z+0.5)+trim.oz+d.dz*trim.sz*0.5+d.dz*0.02;
-        candidates.push({wx,wz,t:d.dx?z:x,key:d.dx?`v:${x}:${d.dx}`:`h:${z}:${d.dz}`});
+        candidates.push({wx,wz,dx:d.dx,dz:d.dz,t:d.dx?z:x,key:d.dx?`v:${x}:${d.dx}`:`h:${z}:${d.dz}`});
       }
     }
 
@@ -2724,6 +2760,9 @@ function initSector93() {
     const mountMat=new THREE.MeshStandardMaterial({color:0x4a3a2a,roughness:0.85,metalness:0.5});
     chosen.forEach(c=>{
       const mt=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.36,0.06),mountMat);
+      // The bracket sits directly under the torch's own light; letting it cast
+      // paints a hard shadow wedge across the wall.
+      mt.userData.noCastShadow=true;
       mt.position.set(c.wx,0.8,c.wz); levelRoot.add(mt);
       const fl=new THREE.Mesh(
         wallFlameGeo,wallFlameMat
@@ -2732,8 +2771,11 @@ function initSector93() {
       const core=new THREE.Mesh(wallCoreGeo,wallCoreMat);
       core.position.set(c.wx,0.99,c.wz-0.012); levelRoot.add(core);
       const aura=addGlowSprite(levelRoot,0xff7a2c,0.9,c.wx,1.12,c.wz,0.3);
-      const light=new THREE.PointLight(0xff8844,0.75 * LIGHT_SOURCE_BOOST,7.2,1.65);
-      light.position.set(c.wx,1.14,c.wz); levelRoot.add(light);
+      const light=new THREE.PointLight(0xff8844,1.2 * LIGHT_SOURCE_BOOST,9,1.4);
+      // Hold the light clear of the wall face: closer than the shadow camera's
+      // near plane (0.12) the wall clips out of the shadow map, leaving a hard
+      // diagonal cutoff along the cube-face seam.
+      light.position.set(c.wx+c.dx*0.14,1.14,c.wz+c.dz*0.14); levelRoot.add(light);
       const embers=[];
       for (let j=0;j<5;j++) {
         const em=new THREE.Mesh(
@@ -2743,7 +2785,10 @@ function initSector93() {
         em.position.set(c.wx,1.12,c.wz); levelRoot.add(em);
         embers.push({m:em,bx:c.wx,by:1.12,bz:c.wz,age:Math.random(),life:0.7+Math.random()*0.6,ph:Math.random()*Math.PI*2,lat:0.05+Math.random()*0.045,rise:0.26+Math.random()*0.24});
       }
-      torches.push({light,flame:fl,core,aura,embers,ph:Math.random()*Math.PI*2,pulse:0.18+Math.random()*0.12,bi:0.65});
+      // Wall-hugging lights never cast: the wall crosses their shadow cube's
+      // face boundary at a grazing angle, which draws a seam line that crawls
+      // across the wall as the player moves.
+      torches.push({light,flame:fl,core,aura,embers,noShadow:true,ph:Math.random()*Math.PI*2,pulse:0.18+Math.random()*0.12,bi:0.65});
     });
     updateTorchLightBudget();
   }
@@ -2759,7 +2804,7 @@ function initSector93() {
     const res=q>=3?1024:q>=2?512:256;
     light.shadow.mapSize.set(res,res);
     light.shadow.bias=-0.0025;
-    light.shadow.normalBias=0.045;
+    light.shadow.normalBias=0.09;
     if (light.shadow.camera){
       light.shadow.camera.near=0.12;
       light.shadow.camera.far=Math.min(Math.max(6,light.distance||14),22);
@@ -2768,17 +2813,20 @@ function initSector93() {
     light._shadowQ=q;
   }
   function updateTorchLightBudget() {
-    const sources=[...torches,...fireLights,...fixtureLights].filter(v=>v.light);
+    const sources=[...torches,...fireLights,...fixtureLights,...transientLights].filter(v=>v.light);
     const worldPos=new THREE.Vector3();
     const nearest=sources
       .map((src,index)=>{src.light.getWorldPosition(worldPos);return{index,d2:(worldPos.x-player.x)**2+(worldPos.z-player.z)**2};})
       .sort((a,b)=>a.d2-b.d2);
     const visibleCount=Math.min(TORCH_LIGHT_BUDGET,nearest.length);
     const visible=new Set(nearest.slice(0,visibleCount).map(v=>v.index));
-    // Only the very nearest lit torches also cast real shadows.
+    // Only the very nearest lit torches also cast real shadows. Transient
+    // glows (pickups, spells, gates) never do: promoting one would allocate a
+    // shadow map for a light that may vanish moments later.
     const shadowOn=renderer.shadowMap.enabled&&TORCH_SHADOW_BUDGET>0;
     const shadowCount=shadowOn?Math.min(TORCH_SHADOW_BUDGET,visibleCount):0;
-    const shadowCasters=new Set(nearest.slice(0,shadowCount).map(v=>v.index));
+    const shadowCasters=new Set(
+      nearest.slice(0,visibleCount).filter(v=>{const s=sources[v.index];return !s.transient&&!s.noShadow;}).slice(0,shadowCount).map(v=>v.index));
     sources.forEach((src,index)=>{
       const vis=visible.has(index);
       src.light.visible=vis;
@@ -2786,6 +2834,28 @@ function initSector93() {
       if (cast) configLightShadow(src.light);
       if (src.light.castShadow!==cast) src.light.castShadow=cast;
     });
+  }
+
+  // Short-lived glows (pickup auras, enemy fireballs, gate lights) must go
+  // through the light budget rather than toggling scene lights directly:
+  // the renderer rebuilds every material's shader program whenever the number
+  // of visible lights changes, which lands as a one-frame hitch. Registering
+  // keeps the visible count pinned at the budget; the immediate re-budget on
+  // register/unregister fills or frees a slot in the same frame.
+  function registerTransientLight(light){
+    if(!light) return;
+    light.visible=false;
+    transientLights.push({light,transient:true});
+    updateTorchLightBudget();
+  }
+  function unregisterTransientLights(root){
+    let removed=false;
+    root.traverse(o=>{
+      if(!o.isPointLight) return;
+      const i=transientLights.findIndex(s=>s.light===o);
+      if(i>=0){ transientLights.splice(i,1); removed=true; }
+    });
+    if(removed) updateTorchLightBudget();
   }
 
   function addFireplaces(fps) {
@@ -2797,7 +2867,7 @@ function initSector93() {
       const fl=new THREE.Mesh(new THREE.SphereGeometry(0.22,10,8),new THREE.MeshBasicMaterial({color:0xff7722,transparent:true,opacity:0.9}));
       fl.position.set(f.x,0.42,f.z); levelRoot.add(fl);
       const aura=addGlowSprite(levelRoot,0xff5d1f,1.5,f.x,0.48,f.z,0.34);
-      const light=new THREE.PointLight(0xff6633,1.4 * LIGHT_SOURCE_BOOST,8.5,2.2);
+      const light=new THREE.PointLight(0xff6633,1.7 * LIGHT_SOURCE_BOOST,10,1.8);
       light.position.set(f.x,0.48,f.z); levelRoot.add(light);
       fireLights.push({light,flame:fl,aura,ph:Math.random()*Math.PI*2,pulse:0.28,bi:1.2});
     });
@@ -3069,7 +3139,43 @@ function initSector93() {
       }
     }
     sShuf(decorCells, currentLevel*37+9);
-    
+
+    // Barrels and crates are used both as corner clutter and to stock the
+    // store rooms below. Their colliders stay low (walkTop under the jump
+    // apex) so the player can always vault them rather than being fenced in.
+    function addBarrel(px,pz,angle){
+      const barrelMat=new THREE.MeshStandardMaterial({color:0x7a5c39,map:woodGrainTex,roughness:0.9,metalness:0.02});
+      const bandMat=new THREE.MeshStandardMaterial({color:0x2c2824,roughness:0.55,metalness:0.72});
+      const barrel=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.24,0.52,10),barrelMat);
+      barrel.position.set(px,0.26,pz); barrel.rotation.y=angle; levelRoot.add(barrel);
+      const belly=new THREE.Mesh(new THREE.CylinderGeometry(0.255,0.255,0.24,10),barrelMat);
+      belly.position.set(px,0.26,pz); belly.rotation.y=angle; levelRoot.add(belly);
+      for(let b=0;b<3;b++) {
+        const r=b===1?0.262:0.23;
+        const band=new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.045,10),bandMat);
+        band.position.set(px,0.09+b*0.17,pz); levelRoot.add(band);
+      }
+      const lid=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.03,10),barrelMat);
+      lid.position.set(px,0.53,pz); levelRoot.add(lid);
+      addCircleCollider(px,pz,0.26,0.56,0.56);
+    }
+    function addCrate(px,pz,angle){
+      const crateGrp=new THREE.Group();
+      const body=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.4,0.4),new THREE.MeshStandardMaterial({color:0x6b4423,map:woodGrainTex,roughness:0.9,metalness:0}));
+      body.position.y=0.2; crateGrp.add(body);
+      const frameMat=new THREE.MeshStandardMaterial({color:0x4d3016,roughness:0.95,metalness:0});
+      for(const cx of [-0.19,0.19]) for(const cz of [-0.19,0.19]){
+        const post=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.42,0.04),frameMat);
+        post.position.set(cx,0.2,cz); crateGrp.add(post);
+      }
+      for(const ry of [0.02,0.38]) for(const axis of [0,1]){
+        const rail=new THREE.Mesh(new THREE.BoxGeometry(axis?0.04:0.42,0.04,axis?0.42:0.04),frameMat);
+        rail.position.set(axis?0.19*(ry>0.2?1:-1):0,ry,axis?0:0.19*(ry>0.2?1:-1)); crateGrp.add(rail);
+      }
+      crateGrp.position.set(px,0,pz); crateGrp.rotation.y=angle; levelRoot.add(crateGrp);
+      addBoxCollider(px,pz,0.42,0.42,angle,0.02,0.42,0.42);
+    }
+
     const decorCount=Math.min(Math.floor(decorCells.length*0.35), 80);
     for(let d=0;d<decorCount;d++) {
       const pos=decorCells[d];
@@ -3091,40 +3197,9 @@ function initSector93() {
         levelRoot.add(base,shaft,capital);
         addCircleCollider(pos.x,pos.z,0.30);
       } else if(type===1 && roomy) {
-        // Wooden barrel — bulged staves, iron hoops, a lid. Sits flush on the floor.
-        const barrelMat=new THREE.MeshStandardMaterial({color:0x7a5c39,map:woodGrainTex,roughness:0.9,metalness:0.02});
-        const bandMat=new THREE.MeshStandardMaterial({color:0x2c2824,roughness:0.55,metalness:0.72});
-        const barrel=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.24,0.52,10),barrelMat);
-        barrel.position.set(pos.x,0.26,pos.z); barrel.rotation.y=angle; levelRoot.add(barrel);
-        // Belly bulge so it reads as a barrel, not a can.
-        const belly=new THREE.Mesh(new THREE.CylinderGeometry(0.255,0.255,0.24,10),barrelMat);
-        belly.position.set(pos.x,0.26,pos.z); belly.rotation.y=angle; levelRoot.add(belly);
-        // Iron hoops sit ON the barrel body (0 .. 0.52), never below the floor.
-        for(let b=0;b<3;b++) {
-          const r=b===1?0.262:0.23;
-          const band=new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.045,10),bandMat);
-          band.position.set(pos.x,0.09+b*0.17,pos.z); levelRoot.add(band);
-        }
-        const lid=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.03,10),barrelMat);
-        lid.position.set(pos.x,0.53,pos.z); levelRoot.add(lid);
-        addCircleCollider(pos.x,pos.z,0.26);
+        addBarrel(pos.x,pos.z,angle);
       } else if(type===2 && roomy) {
-        // Wooden crate — a body with an inset corner frame, sitting flush on the floor.
-        const crateGrp=new THREE.Group();
-        const body=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.4,0.4),new THREE.MeshStandardMaterial({color:0x6b4423,map:woodGrainTex,roughness:0.9,metalness:0}));
-        body.position.y=0.2; crateGrp.add(body);
-        // Corner posts + top/bottom rails as a lighter frame (no z-fighting slabs).
-        const frameMat=new THREE.MeshStandardMaterial({color:0x4d3016,roughness:0.95,metalness:0});
-        for(const cx of [-0.19,0.19]) for(const cz of [-0.19,0.19]){
-          const post=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.42,0.04),frameMat);
-          post.position.set(cx,0.2,cz); crateGrp.add(post);
-        }
-        for(const ry of [0.02,0.38]) for(const axis of [0,1]){
-          const rail=new THREE.Mesh(new THREE.BoxGeometry(axis?0.04:0.42,0.04,axis?0.42:0.04),frameMat);
-          rail.position.set(axis?0.19*(ry>0.2?1:-1):0,ry,axis?0:0.19*(ry>0.2?1:-1)); crateGrp.add(rail);
-        }
-        crateGrp.position.set(pos.x,0,pos.z); crateGrp.rotation.y=angle; levelRoot.add(crateGrp);
-        addBoxCollider(pos.x,pos.z,0.42,0.42,angle,0.02,0.42,0.42);
+        addCrate(pos.x,pos.z,angle);
       } else if(type===3 && roomy) {
         // Stone gargoyle bust on a plinth — grounded, weathered, horned. Was
         // previously a head floating unsupported at mid-height.
@@ -3255,16 +3330,6 @@ function initSector93() {
     sShuf(interiorCells, currentLevel*61+17);
     const reservedInterior=[];
     const canUseInterior=(px,pz,r)=>reservedInterior.every(v=>Math.hypot(v.x-px,v.z-pz)>=r);
-    const roomRot=cell=>cell.spanX>=cell.spanZ?0:Math.PI/2;
-    const wallRot=cell=>{
-      const wallOptions=[
-        {side:'left', gap:cell.left, rot:0, dx:-1, dz:0},
-        {side:'right', gap:cell.right, rot:Math.PI, dx:1, dz:0},
-        {side:'up', gap:cell.up, rot:Math.PI/2, dx:0, dz:-1},
-        {side:'down', gap:cell.down, rot:-Math.PI/2, dx:0, dz:1},
-      ].sort((a,b)=>a.gap-b.gap);
-      return wallOptions[0];
-    };
     const sideOffset=(rot,forward,lateral=0)=>({x:Math.cos(rot)*forward-Math.sin(rot)*lateral,z:Math.sin(rot)*forward+Math.cos(rot)*lateral});
 
     function addChair(px,pz,rot,stool=false) {
@@ -3322,6 +3387,10 @@ function initSector93() {
       const g=new THREE.Group();
       const throneWood=new THREE.MeshStandardMaterial({color:0x482219,map:woodGrainTex,roughness:0.88,metalness:0.02});
       const throneTrim=new THREE.MeshStandardMaterial({color:0xb08743,roughness:0.5,metalness:0.72});
+      // Solid plinth under the seat — a throne floating on air reads as a bug.
+      const dais=new THREE.Mesh(new THREE.BoxGeometry(0.86,0.12,0.74),new THREE.MeshStandardMaterial({color:0x55505a,roughness:0.92,metalness:0.03}));
+      dais.position.y=0.06; g.add(dais);
+      const base=new THREE.Mesh(new THREE.BoxGeometry(0.56,0.42,0.46),throneWood); base.position.y=0.31; g.add(base);
       const seat=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.12,0.52),throneWood); seat.position.y=0.55; g.add(seat);
       const back=new THREE.Mesh(new THREE.BoxGeometry(0.62,1.15,0.14),throneWood); back.position.set(0,1.08,0.19); g.add(back);
       [-1,1].forEach(side=>{
@@ -3483,74 +3552,240 @@ function initSector93() {
       levelRoot.add(g);
     }
 
-    const setpieceCount=Math.min(Math.floor(interiorCells.length*0.1), 14);
-    for(let i=0;i<setpieceCount;i++) {
-      const pos=interiorCells[i];
-      if(!canUseInterior(pos.x,pos.z,2.1)) continue;
-      const variantRoll=rng(i+3000);
-      const variant=variantRoll<0.16?0:variantRoll<0.28?1:variantRoll<0.48?2:variantRoll<0.66?3:4;
-      const rot=roomRot(pos);
-      const wall=wallRot(pos);
-      if(variant===0) {
-        addRug(pos.x,pos.z,2.05,1.45,rot,false);
-        addTable(pos.x,pos.z,false,rot);
-        {
-          const a=sideOffset(rot,-0.72), b=sideOffset(rot,0.72);
-          addChair(pos.x+a.x,pos.z+a.z,rot+Math.PI,false);
-          addChair(pos.x+b.x,pos.z+b.z,rot,false);
-        }
-        reservedInterior.push({x:pos.x,z:pos.z});
-      } else if(variant===1) {
-        addRug(pos.x,pos.z,2.6,1.3,rot,true);
-        addTable(pos.x,pos.z,true,rot);
-        {
-          const a=sideOffset(rot,0,0.88), b=sideOffset(rot,0,-0.88);
-          addChair(pos.x+a.x,pos.z+a.z,rot+Math.PI/2,true);
-          addChair(pos.x+b.x,pos.z+b.z,rot-Math.PI/2,true);
-        }
-        reservedInterior.push({x:pos.x,z:pos.z});
-      } else if(variant===2) {
-        const fireRot=wall.rot;
-        const brazierPos=sideOffset(fireRot,-0.18);
-        addRug(pos.x,pos.z,1.8,1.55,rot,false);
-        const stoolA=sideOffset(fireRot,0.76,0.34), stoolB=sideOffset(fireRot,0.76,-0.34);
-        addChair(pos.x+stoolA.x,pos.z+stoolA.z,fireRot+Math.PI,true);
-        addChair(pos.x+stoolB.x,pos.z+stoolB.z,fireRot+Math.PI,true);
-        const brazier=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.2,0.18,7),brassMat);
-        brazier.position.set(pos.x+brazierPos.x,0.09,pos.z+brazierPos.z); levelRoot.add(brazier);
-        const coal=new THREE.Mesh(new THREE.SphereGeometry(0.11,7,6),new THREE.MeshBasicMaterial({color:0xff5a18,transparent:true,opacity:0.84}));
-        coal.position.set(pos.x+brazierPos.x,0.2,pos.z+brazierPos.z); levelRoot.add(coal);
-        const brazierLight=new THREE.PointLight(0xff6b2b,0.48*LIGHT_SOURCE_BOOST,3.8,1.9);
-        brazierLight.position.set(pos.x+brazierPos.x,0.28,pos.z+brazierPos.z); levelRoot.add(brazierLight);
-        fixtureLights.push({light:brazierLight});
-        addCircleCollider(pos.x+brazierPos.x,pos.z+brazierPos.z,0.2);
-        reservedInterior.push({x:pos.x,z:pos.z});
-      } else if(variant===3) {
-        addRug(pos.x,pos.z,2.3,1.2,rot,true);
-        addTable(pos.x,pos.z,true,rot);
-        const benchA=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.1,0.22),woodMat);
-        benchA.position.set(pos.x,0.33,pos.z-0.28); benchA.rotation.y=rot; levelRoot.add(benchA);
-        const benchB=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.1,0.22),woodMat);
-        benchB.position.set(pos.x,0.33,pos.z+0.28); benchB.rotation.y=rot; levelRoot.add(benchB);
-        addBoxCollider(pos.x,pos.z-0.28,0.9,0.22,rot,0.03,0.48,0.48);
-        addBoxCollider(pos.x,pos.z+0.28,0.9,0.22,rot,0.03,0.48,0.48);
-        const legs=[[-0.34,-0.08],[0.34,-0.08],[-0.34,0.08],[0.34,0.08]];
-        legs.forEach(([lx,lz],li)=>{
-          const leg=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.32,0.06),darkWoodMat);
-          leg.position.set(pos.x+lx*Math.cos(rot)-lz*Math.sin(rot),0.16,pos.z+lx*Math.sin(rot)+lz*Math.cos(rot)); levelRoot.add(leg);
-        });
-        reservedInterior.push({x:pos.x,z:pos.z});
-      } else {
-        addRug(pos.x,pos.z,1.9,1.35,rot,false);
-        {
-          const stoolPos=sideOffset(wall.rot,0.7);
-          addChair(pos.x+stoolPos.x,pos.z+stoolPos.z,wall.rot+Math.PI,true);
-        }
-        reservedInterior.push({x:pos.x,z:pos.z});
+    // ── Room furnishing ──────────────────────────────────────────────────
+    // Rooms are furnished by role so the keep reads as a place people lived
+    // in: the largest chamber becomes the great hall (feast table, benches,
+    // throne, hearth), other rooms become hearth lounges, libraries, chapels,
+    // dining nooks or store rooms. Everything anchors to each room's real
+    // walls and center — exported by the generator — instead of scattering
+    // over random open cells. Free-standing pieces keep low, vaultable
+    // colliders so furniture never fences the player in: you can always jump
+    // over it.
+    const torchAt=(px,pz,r=0.72)=>torches.some(tr=>Math.hypot(tr.flame.position.x-px,tr.flame.position.z-pz)<r);
+    const cellOpen=(x,z)=>!isSolid(currentMap[z]?.[x]??1);
+    const cellSolid=(x,z)=>isSolid(currentMap[z]?.[x]??1);
+
+    function addBench(px,pz,rot,len=0.9){
+      const bench=new THREE.Mesh(new THREE.BoxGeometry(len,0.1,0.22),woodMat);
+      bench.position.set(px,0.33,pz); bench.rotation.y=rot; levelRoot.add(bench);
+      const lx=Math.cos(rot),lz=-Math.sin(rot);
+      for(const s of [-1,1]){
+        const leg=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.32,0.06),darkWoodMat);
+        leg.position.set(px+lx*s*len*0.38,0.16,pz+lz*s*len*0.38); levelRoot.add(leg);
       }
+      addBoxCollider(px,pz,len,0.22,rot,0.03,0.44,0.44);
     }
 
-    const torchAt=(px,pz,r=0.72)=>torches.some(tr=>Math.hypot(tr.flame.position.x-px,tr.flame.position.z-pz)<r);
+    // A fireplace set into a wall: chimney breast to the ceiling, sooty
+    // firebox, mantel, log fire, and chairs pulled up in front of it.
+    function addHearth(f){
+      const rot=f.rot, nx=Math.sin(rot), nz=Math.cos(rot), tx=Math.cos(rot), tz=-Math.sin(rot);
+      const g=new THREE.Group();
+      const stone=new THREE.MeshStandardMaterial({color:0x625c53,roughness:0.93,metalness:0.02});
+      const stoneDark=new THREE.MeshStandardMaterial({color:0x36322e,roughness:0.95,metalness:0.02});
+      const soot=new THREE.MeshStandardMaterial({color:0x191512,roughness:0.98,metalness:0});
+      const breast=new THREE.Mesh(new THREE.BoxGeometry(1.46,2.05,0.4),stone); breast.position.set(0,1.02,0.2); g.add(breast);
+      const chimney=new THREE.Mesh(new THREE.BoxGeometry(1.06,WALL_H-2.05,0.3),stone); chimney.position.set(0,2.05+(WALL_H-2.05)/2,0.15); g.add(chimney);
+      const back=new THREE.Mesh(new THREE.PlaneGeometry(0.84,0.86),soot); back.position.set(0,0.45,0.405); g.add(back);
+      const lintel=new THREE.Mesh(new THREE.BoxGeometry(1.1,0.16,0.14),stoneDark); lintel.position.set(0,0.95,0.42); g.add(lintel);
+      for(const s of [-1,1]){ const jamb=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.9,0.14),stoneDark); jamb.position.set(s*0.48,0.45,0.42); g.add(jamb); }
+      const mantel=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.09,0.5),stoneDark); mantel.position.set(0,1.08,0.25); g.add(mantel);
+      const slab=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.05,0.62),stoneDark); slab.position.set(0,0.025,0.5); g.add(slab);
+      const logMat=new THREE.MeshStandardMaterial({color:0x4a2f18,map:woodGrainTex,roughness:0.95,metalness:0});
+      for(const [lx,ly,lr] of [[-0.12,0.1,0.5],[0.14,0.1,-0.4],[0,0.2,0.1]]){
+        const log=new THREE.Mesh(new THREE.CylinderGeometry(0.055,0.06,0.5,6),logMat);
+        log.position.set(lx,ly,0.42); log.rotation.z=Math.PI/2; log.rotation.y=lr; g.add(log);
+      }
+      // Sculpted log fire, not a glowing ball: the same lathe-profile flame
+      // language as the wall torches, scaled up, with core, licks and embers.
+      // Registered in `torches` so it inherits the full flicker animation.
+      // Authored at roughly half the target size: the torch flicker loop
+      // scales the flame by ~1.6-2.2x (its pulse tracks light intensity, and
+      // the hearth runs bright), so this profile lands ~0.5 tall on screen.
+      const flameGeo=new THREE.LatheGeometry([
+        new THREE.Vector2(0.004,0),new THREE.Vector2(0.062,0.016),
+        new THREE.Vector2(0.10,0.066),new THREE.Vector2(0.082,0.136),
+        new THREE.Vector2(0.047,0.206),new THREE.Vector2(0.016,0.256),new THREE.Vector2(0,0.29)
+      ],8);
+      const coreGeo=new THREE.LatheGeometry([
+        new THREE.Vector2(0.003,0),new THREE.Vector2(0.032,0.014),
+        new THREE.Vector2(0.05,0.056),new THREE.Vector2(0.026,0.112),new THREE.Vector2(0,0.15)
+      ],7);
+      const fl=new THREE.Mesh(flameGeo,new THREE.MeshBasicMaterial({color:0xff8a2a,transparent:true,opacity:0.88,side:THREE.DoubleSide}));
+      fl.position.set(0,0.16,0.4); g.add(fl);
+      const core=new THREE.Mesh(coreGeo,new THREE.MeshBasicMaterial({color:0xffedaa,transparent:true,opacity:0.9,side:THREE.DoubleSide}));
+      core.position.set(0,0.17,0.42); g.add(core);
+      const lickA=new THREE.Mesh(new THREE.ConeGeometry(0.032,0.13,5),new THREE.MeshBasicMaterial({color:0xff7a22,transparent:true,opacity:0.72,side:THREE.DoubleSide}));
+      lickA.position.set(-0.11,0.24,0.4); lickA.rotation.z=-0.2; g.add(lickA);
+      const lickB=new THREE.Mesh(new THREE.ConeGeometry(0.026,0.10,5),new THREE.MeshBasicMaterial({color:0xffd36e,transparent:true,opacity:0.75,side:THREE.DoubleSide}));
+      lickB.position.set(0.10,0.22,0.42); lickB.rotation.z=0.24; g.add(lickB);
+      addGlowSprite(g,0xff5d1f,1.5,0,0.5,0.55,0.3);
+      const light=new THREE.PointLight(0xff6633,1.6*LIGHT_SOURCE_BOOST,9.5,1.8);
+      light.position.set(0,0.75,0.72); g.add(light);
+      g.position.set(f.x,0,f.z); g.rotation.y=rot; levelRoot.add(g);
+      const emberX=f.x+nx*0.4, emberZ=f.z+nz*0.4;
+      const embers=[];
+      for(let j=0;j<6;j++){
+        const em=new THREE.Mesh(new THREE.SphereGeometry(0.03,5,4),new THREE.MeshBasicMaterial({color:0xff6611,transparent:true,opacity:0.85}));
+        em.position.set(emberX,0.3,emberZ); levelRoot.add(em);
+        embers.push({m:em,bx:emberX,by:0.26,bz:emberZ,age:Math.random(),life:0.8+Math.random()*0.7,ph:Math.random()*Math.PI*2,lat:0.06+Math.random()*0.05,rise:0.3+Math.random()*0.25});
+      }
+      // noShadow: a light this close to its own chimney breast draws seam
+      // artifacts if promoted to a shadow caster.
+      // lickA/lickB stay static side-tongues: the torch loop's lick offsets
+      // are tuned for the small wall-flame scale and would bury them here.
+      torches.push({light,flame:fl,core,embers,ph:Math.random()*Math.PI*2,pulse:0.24,bi:1.4,noShadow:true});
+      // Breast is solid; the hearth slab is a low step. Chairs are vaultable.
+      addBoxCollider(f.x+nx*0.25,f.z+nz*0.25,1.5,0.5,rot,0.02,1.8);
+      addBoxCollider(f.x+nx*0.55,f.z+nz*0.55,1.4,0.35,rot,0.02,0.62,0.62);
+      addRug(f.x+nx*1.15,f.z+nz*1.15,1.55,1.05,rot);
+      addChair(f.x+nx*1.45+tx*0.46,f.z+nz*1.45+tz*0.46,rot+Math.PI);
+      addChair(f.x+nx*1.45-tx*0.46,f.z+nz*1.45-tz*0.46,rot+Math.PI);
+      reservedInterior.push({x:f.x+nx*0.8,z:f.z+nz*0.8});
+    }
+
+    // Usable wall anchor points inside a room: an open perimeter cell backed
+    // by a wide-enough run of solid wall, with clear floor beside and in
+    // front, away from doors, torches, the key and the spawn.
+    const roomWallSlots=(room)=>{
+      const slots=[];
+      const dirs=[{dx:0,dz:-1,rot:0},{dx:0,dz:1,rot:Math.PI},{dx:-1,dz:0,rot:Math.PI/2},{dx:1,dz:0,rot:-Math.PI/2}];
+      for(const d of dirs){
+        const lx=d.dx?0:1, lz=d.dx?1:0;
+        for(let x=room.x1;x<=room.x2;x++) for(let z=room.z1;z<=room.z2;z++){
+          if((d.dz===-1&&z!==room.z1)||(d.dz===1&&z!==room.z2)||(d.dx===-1&&x!==room.x1)||(d.dx===1&&x!==room.x2)) continue;
+          if(!cellOpen(x,z)||!cellSolid(x+d.dx,z+d.dz)) continue;
+          if(!cellSolid(x+d.dx+lx,z+d.dz+lz)||!cellSolid(x+d.dx-lx,z+d.dz-lz)) continue;
+          if(!cellOpen(x+lx,z+lz)||!cellOpen(x-lx,z-lz)) continue;
+          if(!cellOpen(x-d.dx,z-d.dz)||!cellOpen(x-d.dx*2,z-d.dz*2)) continue;
+          const px=x+0.5,pz=z+0.5;
+          if(Math.hypot(px-spawnX,pz-spawnZ)<4||nearDoorFeature(px,pz,2.4)) continue;
+          if(currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.4)) continue;
+          const face=wallFace(x,z,d.rot);
+          if(torchAt(face.x,face.z,1.05)) continue;
+          // Corner clutter is placed before furnishing — skip anchor points
+          // whose vignette footprint (wall piece + chairs in front) would
+          // land on an existing barrel, column or crate.
+          if(decorHeightAt(px,pz,0.6)>0) continue;
+          if(decorHeightAt(face.x+Math.sin(d.rot)*1.25,face.z+Math.cos(d.rot)*1.25,0.85)>0) continue;
+          const mid=Math.abs(px-((room.x1+room.x2)/2+0.5))+Math.abs(pz-((room.z1+room.z2)/2+0.5));
+          slots.push({...face,mid});
+        }
+      }
+      return slots.sort((a,b)=>a.mid-b.mid);
+    };
+    const takeSlot=(slots,minGap=1.6)=>{
+      const i=slots.findIndex(s=>reservedInterior.every(r=>Math.hypot(r.x-s.x,r.z-s.z)>=minGap));
+      return i<0?null:slots.splice(i,1)[0];
+    };
+
+    if(currentRooms.length>1){
+      const rArea=r=>(r.x2-r.x1+1)*(r.z2-r.z1+1);
+      const furnishable=currentRooms.slice(1)
+        .filter(r=>!inBossExitRoom(r.cx+0.5,r.cz+0.5))
+        .sort((a,b)=>rArea(b)-rArea(a));
+      let hearthsLeft=furnishable.length>=5?2:1;
+      furnishable.forEach((room,ri)=>{
+        const w=room.x2-room.x1+1, h=room.z2-room.z1+1;
+        const cx=(room.x1+room.x2)/2+0.5, cz=(room.z1+room.z2)/2+0.5;
+        const rot=w>=h?0:Math.PI/2;
+        const slots=roomWallSlots(room);
+        // Evaluated lazily so it sees reserves pushed earlier in the same
+        // room (a hearth already claims the space its chairs reach into).
+        const centerFree=()=>Math.hypot(cx-spawnX,cz-spawnZ)>=4.5
+          && !nearDoorFeature(cx,cz,2.6)
+          && !currentMapKeys.some(k=>Math.hypot(cx-k.x,cz-k.z)<2.6)
+          && decorHeightAt(cx,cz,1.1)===0
+          && canUseInterior(cx,cz,2.0);
+        const roll=rng(ri+5000);
+        if(ri===0&&w>=4&&h>=4){
+          room.role='hall';
+          // Great hall: hearth first, feast table only when the room truly
+          // has space left for it, throne on a far wall. Small early-level
+          // halls get the hearth alone rather than everything crammed in.
+          if(hearthsLeft>0){
+            const hs=takeSlot(slots,1.8);
+            if(hs){ addHearth(hs); hearthsLeft--; }
+          }
+          if(Math.min(w,h)>=5&&centerFree()){
+            addRug(cx,cz,2.7,1.7,rot);
+            addTable(cx,cz,true,rot);
+            const bx=Math.sin(rot),bz=Math.cos(rot);
+            addBench(cx+bx*0.42,cz+bz*0.42,rot);
+            addBench(cx-bx*0.42,cz-bz*0.42,rot);
+            reservedInterior.push({x:cx,z:cz});
+          }
+          const ts=takeSlot(slots,2.2);
+          if(ts){
+            addThrone(ts.x+Math.sin(ts.rot)*0.42,ts.z+Math.cos(ts.rot)*0.42,ts.rot+Math.PI);
+            reservedInterior.push({x:ts.x,z:ts.z});
+          }
+        } else if(hearthsLeft>0&&w>=3&&h>=3&&slots.length){
+          // Hearth lounge: fireplace in the wall, chairs pulled up to it —
+          // nothing else, the fire is the room.
+          const hs=takeSlot(slots,1.8);
+          if(hs){ addHearth(hs); hearthsLeft--; room.role='hearth'; }
+        } else if(roll<0.25&&slots.length&&w*h>=12){
+          // Library: shelves back onto the walls, reading table mid-room.
+          let placed=0;
+          for(let k=0;k<2;k++){
+            const s=takeSlot(slots,1.3);
+            if(!s) break;
+            addBookshelf(s.x+Math.sin(s.rot)*0.14,s.z+Math.cos(s.rot)*0.14,s.rot+Math.PI);
+            reservedInterior.push({x:s.x,z:s.z}); placed++;
+          }
+          if(placed) room.role='library';
+          if(placed&&Math.min(w,h)>=4&&centerFree()){
+            addRug(cx,cz,1.9,1.3,rot,true);
+            addTable(cx,cz,false,rot);
+            const a=sideOffset(rot,0.72);
+            addChair(cx+a.x,cz+a.z,rot,false);
+          }
+        } else if(roll<0.45&&slots.length&&w*h>=12){
+          // Chapel: altar against the wall, stool rows facing it down a runner.
+          const s=takeSlot(slots,1.8);
+          if(s){
+            room.role='chapel';
+            const nx=Math.sin(s.rot),nz=Math.cos(s.rot),tx=Math.cos(s.rot),tz=-Math.sin(s.rot);
+            addAltar(s.x+nx*0.34,s.z+nz*0.34,s.rot);
+            addRug(s.x+nx*1.3,s.z+nz*1.3,1.0,1.8,s.rot,true);
+            for(const row of [1.1,1.7]) for(const sd of [-1,1])
+              addChair(s.x+nx*row+tx*sd*0.42,s.z+nz*row+tz*sd*0.42,s.rot+Math.PI,true);
+            reservedInterior.push({x:s.x+nx*0.6,z:s.z+nz*0.6});
+          }
+        } else if(roll<0.65&&w>=4&&h>=4&&centerFree()){
+          // Dining nook: table with chairs at either end.
+          room.role='dining';
+          addRug(cx,cz,2.05,1.45,rot);
+          addTable(cx,cz,false,rot);
+          const a=sideOffset(rot,-0.72), b=sideOffset(rot,0.72);
+          addChair(cx+a.x,cz+a.z,rot+Math.PI,false);
+          addChair(cx+b.x,cz+b.z,rot,false);
+          reservedInterior.push({x:cx,z:cz});
+        } else if(roll<0.7){
+          // Store room: barrels and a crate tucked into a corner.
+          const corners=[[room.x1,room.z1],[room.x2,room.z1],[room.x1,room.z2],[room.x2,room.z2]];
+          for(const [gx,gz] of corners){
+            const px=gx+0.5,pz=gz+0.5;
+            if(!cellOpen(gx,gz)||Math.hypot(px-spawnX,pz-spawnZ)<4||nearDoorFeature(px,pz,2.2)) continue;
+            if(currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.2)) continue;
+            if(!canUseInterior(px,pz,1.4)) continue;
+            if(decorHeightAt(px,pz,0.85)>0) continue; // corner already cluttered
+            const inx=gx===room.x1?1:-1, inz=gz===room.z1?1:-1;
+            addBarrel(px,pz,rng(ri+5200)*Math.PI*2);
+            if(cellOpen(gx+inx,gz)) addBarrel(px+inx*0.52,pz,rng(ri+5201)*Math.PI*2);
+            if(cellOpen(gx,gz+inz)) addCrate(px,pz+inz*0.55,rng(ri+5202)*0.6);
+            reservedInterior.push({x:px,z:pz});
+            room.role='store';
+            break;
+          }
+        }
+        // Rooms falling through every gate stay bare on purpose — an empty
+        // chamber between furnished ones keeps the keep from feeling stuffed.
+      });
+      if(window.DEBUG_DECOR) console.log('[decor] level',currentLevel,
+        furnishable.map(r=>`${r.x2-r.x1+1}x${r.z2-r.z1+1}:${r.role||'bare'}`).join(' '));
+    }
     const bannerCells=[];
     const placedBanners=[];
     for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
@@ -3639,10 +3874,11 @@ function initSector93() {
     for (const cell of interiorCells) {
       if (cell.tight) continue;
       if (Math.hypot(cell.x-spawnX,cell.z-spawnZ)<4.5||nearDoorFeature(cell.x,cell.z,2.2)) continue;
+      if (!canUseInterior(cell.x,cell.z,1.8)) continue; // keep clear of furnished vignettes
       trinketCells.push(cell);
     }
     sShuf(trinketCells,currentLevel*79+21);
-    const trinketCount=Math.min(Math.max(3,Math.floor(trinketCells.length*0.08)),12);
+    const trinketCount=Math.min(trinketCells.length,12,Math.max(3,Math.floor(trinketCells.length*0.08)));
     for (let i=0;i<trinketCount;i++) {
       const c=trinketCells[i];
       addTrinketCluster(c.x,c.z,i,i%4);
@@ -3679,16 +3915,6 @@ function initSector93() {
     for(let i=0;i<chandelierCount;i++){
       const c=chandelierCells[i];
       addChandelier(c.x,c.z,0.9+((i%3)*0.14));
-    }
-    const grandRoomCells=roomCenters.filter(c=>
-      chandelierCells.every(p=>Math.hypot(p.x-c.x,p.z-c.z)>=2.4)
-      && reservedInterior.every(p=>Math.hypot(p.x-c.x,p.z-c.z)>=2.2)
-    );
-    for(let i=0;i<Math.min(3,grandRoomCells.length);i++) {
-      const c=grandRoomCells[i];
-      if(i%3===0) addThrone(c.x,c.z,roomRot(c));
-      else if(i%3===1) addBookshelf(c.x,c.z,wallRot(c).rot);
-      else addAltar(c.x,c.z,roomRot(c));
     }
     updateTorchLightBudget();
 
@@ -3997,7 +4223,7 @@ function initSector93() {
 
   // ── Gates ────────────────────────────────────────────────────────────────────
   function unlockGates() {
-    gates.forEach(g=>{ if(g.opened)return; g.opened=true; currentMap[g.z][g.x]=0; if(g.m.parent)g.m.parent.remove(g.m); });
+    gates.forEach(g=>{ if(g.opened)return; g.opened=true; currentMap[g.z][g.x]=0; unregisterTransientLights(g.m); if(g.m.parent)g.m.parent.remove(g.m); });
     sfx.gate();
     statusEl.textContent='Gate unlocked — reach the iron gate at the end of the hallway.';
   }
@@ -4247,7 +4473,7 @@ function initSector93() {
         tryAddPickup(rooms[ri].cx+0.5, rooms[ri].cz+0.5, rng(ri+1100)<0.62?'medkit':'ammo');
     }
     // Ammo near the gate as a reward for reaching the key area
-    if(!isSolid(map[gateZ]?.[barrierX-2]||1))
+    if(!isSolid(map[gateZ]?.[barrierX-2]??1))
       tryAddPickup(barrierX-2+0.5, gateZ+0.5, 'ammo');
     // Weapon upgrades follow the level tier curve, so the full set lands by the end of the 20-level arc.
     if(player.gunTier<6&&progression.gunTier>player.gunTier) {
@@ -4278,23 +4504,18 @@ function initSector93() {
       }
     }
 
-    // ── Fireplaces ────────────────────────────────────────────────────
-    // Anchor the hearth in the largest chamber along the route so it reads as a
-    // great hall the player passes through, not a random cell.
-    const area = r => (r.x2-r.x1)*(r.z2-r.z1);
-    const midRooms = rooms.slice(1, Math.max(2, rooms.length-1));
-    const hallRoom = (midRooms.length?midRooms:rooms).reduce((big,r)=>area(r)>area(big)?r:big);
-    const fireplaces = rooms.length>1 ? [{x:hallRoom.cx, z:hallRoom.cz}] : [];
+    // Hearths, furniture and clutter are placed by addCastleDecorations, which
+    // works from the real room rectangles exported below.
 
     // ── Atmosphere cycles through 3 moods ─────────────────────────────
     const atm = idx%3;
     return {
       name:`Keep ${idx+1}`,
       fogColor: [0x050b0d,0x030a08,0x090708][atm],
-      fogDensity: Math.min(0.22, 0.145 + Math.floor(idx/6)*0.009),
+      fogDensity: Math.min(0.18, 0.115 + Math.floor(idx/6)*0.007),
       ambCol: [0x405768,0x365c50,0x493b48][atm],
-      ambInt: 0.28,
-      fireplaces, map, enemies, pickups, keyChamberCells,
+      ambInt: 0.16,
+      rooms, map, enemies, pickups, keyChamberCells,
       spawnRoom:{...rooms[0]},
       bossExitRoom:{x1:ezX1-0.5,x2:ezX2+0.5,z1:hallZ1-2.5,z2:hallZ2+2.5},
     };
@@ -4313,7 +4534,7 @@ function initSector93() {
       if(!std) return;
       const isPlane=o.geometry&&o.geometry.type==='PlaneGeometry';
       o.receiveShadow=true;
-      o.castShadow=!isPlane;
+      o.castShadow=!isPlane&&!o.userData.noCastShadow;
     });
   }
   function loadLevel(idx, keepStats) {
@@ -4326,6 +4547,7 @@ function initSector93() {
     scene.fog.color.copy(fc); scene.fog.density=lvl.fogDensity*(settings.fogDensity/0.13); scene.background.copy(fc);
     ambient.color.setHex(lvl.ambCol); ambient.intensity=lvl.ambInt * GLOBAL_LIGHT_BOOST;
     currentMap=lvl.map.map(r=>[...r]); sealBorders(currentMap);
+    currentRooms=lvl.rooms||[];
     bossExitRoom=lvl.bossExitRoom||null;
     worldW=currentMap[0].length; worldH=currentMap.length;
 
@@ -4385,6 +4607,7 @@ function initSector93() {
         gGrp.position.set(px,0.84,pz);
         gGrp.rotation.y=Math.PI/2;
         levelRoot.add(gGrp);
+        registerTransientLight(gateGlow);
         gates.push({x,z,m:gGrp,opened:false});
       }
       if (v===2) { spawnX=px; spawnZ=pz; }
@@ -4401,6 +4624,8 @@ function initSector93() {
 
     addTorches(lvl.keyChamberCells);
     addCastleDecorations();
+    // Generated levels get wall hearths from the decorator; only the
+    // hand-authored fallback layouts still carry free-standing fire pits.
     addFireplaces(lvl.fireplaces||[]);
     addDampAtmosphere();
     addGroundClutter();
@@ -4533,7 +4758,7 @@ function initSector93() {
     statusEl.textContent=`${lvl.name} — Find the key and defeat ${levelMinibossVariant.name}.`;
     if (renderer.shadowMap.enabled) applyShadowFlags();
     updateTorchLightBudget();
-    updateHud(); updateCamera();
+    updateHud(); updateCamera(0);
   }
 
   // ── Enemies ──────────────────────────────────────────────────────────────────
@@ -4575,6 +4800,7 @@ function initSector93() {
         et.hp * (type==='miniboss' ? (D.bossHpMult ?? D.hpMult) : D.hpMult)
       ));
       mesh.userData={
+        baseColor:mat.color.clone(),
         alive:true,dying:0,deathT:0,type,bossVariant:variant?.name||null,bossAcd:et.acd,
         hp:   spawnHp,
         maxHp:spawnHp,
@@ -4586,7 +4812,7 @@ function initSector93() {
         stuckT:0, avoidT:0, lunge:0, wA:Math.random()*Math.PI*2, wT:0,
         turnBias:Math.random()<0.5?-1:1,
         bs:Math.random()*Math.PI*2,
-        state:'patrol', alertT:0, id:i, origColor:null,
+        state:'patrol', alertT:0, id:i,
         walkPhase:Math.random()*Math.PI*2, attackFlash:0, hitFlash:0,
         animT:Math.random()*2, animFrame:0, sees:false, losT:Math.random()*0.12,
         baseY, isFlying:isFiend, shadow,
@@ -4684,14 +4910,39 @@ function initSector93() {
     return best;
   }
 
+  // Enemy sprites are unlit, so without this they read at full texture
+  // brightness from any distance and glow through the murk. Approximate the
+  // real lighting instead: the player's carried torch plus whichever level
+  // lights the budget currently has lit. Scene fog handles the rest.
+  const _litSources=[], _litPos=new THREE.Vector3();
+  function collectLitSources(){
+    _litSources.length=0;
+    for(const arr of [torches,fireLights,fixtureLights]){
+      for(const s of arr){
+        const l=s.light; if(!l||!l.visible) continue;
+        l.getWorldPosition(_litPos);
+        _litSources.push({x:_litPos.x,z:_litPos.z,i:l.intensity,range:l.distance||8});
+      }
+    }
+  }
+  function enemyShade(x,z){
+    let b=1.5/(1+Math.hypot(player.x-x,player.z-z)*0.45);
+    for(const s of _litSources){
+      const d=Math.hypot(s.x-x,s.z-z);
+      if(d<s.range) b=Math.max(b,(s.i*0.5)/(1+d*0.55));
+    }
+    return Math.min(1,0.22+b);
+  }
   function updateEnemies(dt) {
     const er=0.26;
+    collectLitSources();
     enemies.forEach(e=>{
       const d=e.userData;
       e.lookAt(camera.position.x,e.position.y,camera.position.z);
       if (!d.alive) {
         if (d.dying>0) { d.dying=Math.max(0,d.dying-dt*2); d.deathT+=dt; e.material.opacity=d.dying; e.scale.set(d.bsx*(0.7+d.dying*0.3),d.bsy*Math.max(0.12,d.dying),1); e.position.y=0.3+d.dying*0.48; }
         if (d.shadow) d.shadow.material.opacity=0.18*d.dying;
+        if (d.baseColor) e.material.color.copy(d.baseColor).multiplyScalar(enemyShade(e.position.x,e.position.z));
         return;
       }
       const pdx=player.x-e.position.x,pdz=player.z-e.position.z,dist=Math.hypot(pdx,pdz);
@@ -4703,6 +4954,10 @@ function initSector93() {
       }
       const sees=d.sees;
       const t=performance.now()*0.001+d.bs;
+      // Distant mobs fade out instead of silhouetting black against the fog:
+      // shading can only darken them, and past torch range a darkened sprite
+      // reads as a cardboard cutout hovering in the murk.
+      const vis=Math.max(0,Math.min(1,(13-dist)/4));
 
       // ── State transitions ────────────────────────────────────────────────────
       // Low HP threshold: below 25% of max HP triggers flee for non-boss enemies
@@ -4786,7 +5041,7 @@ function initSector93() {
       if (d.shadow) {
         d.shadow.position.x=e.position.x;
         d.shadow.position.z=e.position.z;
-        d.shadow.material.opacity=d.isFlying?0.08+Math.max(0,1-(e.position.y-d.baseY))*0.05:0.24;
+        d.shadow.material.opacity=(d.isFlying?0.08+Math.max(0,1-(e.position.y-d.baseY))*0.05:0.24)*vis;
       }
       if (dist<1.8) d.lunge=Math.min(1,d.lunge+dt*3); else d.lunge=Math.max(0,d.lunge-dt*2);
       // Flying enemies oscillate; goliath bobs heavily; others stay low
@@ -4819,7 +5074,7 @@ function initSector93() {
       } else if(d.type==='spectre'){
         // Spectre — opacity flicker + glide sway
         e.position.y=d.baseY+Math.sin(t*2.8+d.bs)*0.15;
-        e.material.opacity=Math.max(0.15,0.30+Math.abs(Math.sin(t*6.5+d.bs))*0.32+(d.attackFlash>0?0.28:0));
+        e.material.opacity=Math.max(0.15,0.30+Math.abs(Math.sin(t*6.5+d.bs))*0.32+(d.attackFlash>0?0.28:0))*vis;
         e.scale.set(d.bsx*(1+wc*0.06+hitPulse),d.bsy*(1+hitPulse*0.6),1);
       } else if(d.type==='brute'){
         // Brute — heavy stomp squash
@@ -4847,14 +5102,16 @@ function initSector93() {
         tiltZ=Math.sin(d.walkPhase*0.8+d.bs)*0.055 + (isWalking?Math.sin(wc*2)*0.02:0) + (d.attackFlash>0?0.02:0);
       }
       e.rotateZ(tiltZ);
-      // Damage flash takes priority over attack flash.
+      if(d.type!=='spectre') e.material.opacity=vis;
+      // Damage flash takes priority over attack flash; otherwise the sprite
+      // takes the local light level so mobs read as lit by torches, not
+      // self-illuminated.
       if(d.hitFlash>0.02){
         e.material.color.setRGB(1, 0.98, 0.55);
       } else if(d.attackFlash>0.06){
         e.material.color.setRGB(1, 0.5+d.attackFlash*0.4, 0.12);
-      } else if(d.attackFlash>0){
-        if(d.origColor) e.material.color.copy(d.origColor); else e.material.color.setHex(0xffffff);
-        d.attackFlash=0;
+      } else {
+        e.material.color.copy(d.baseColor).multiplyScalar(enemyShade(e.position.x,e.position.z));
       }
       // Mob sound timer
       d.soundT=(d.soundT==null?1.5+Math.random()*3:d.soundT)-dt;
@@ -4910,6 +5167,7 @@ function initSector93() {
         g.add(orb,shell,ring1,ring2,glow);
         g.position.set(pos.x,0.5,pos.z);
         levelRoot.add(g);
+        registerTransientLight(glow);
         pickups.push({type:'upgrade',mesh:g,baseY:0.5,ph:Math.random()*Math.PI*2,taken:false});
         return; // skip the default push below
       } else if (p.type==='armor') {
@@ -4934,6 +5192,7 @@ function initSector93() {
         const glow=new THREE.PointLight(plateCols[tier-1],tier>=3?0.8:0.55,3.2,2); glow.position.y=0.12; g.add(glow);
         g.position.set(pos.x,0.46,pos.z);
         levelRoot.add(g);
+        registerTransientLight(glow);
         pickups.push({type:'armor',tier,mesh:g,baseY:0.46,ph:Math.random()*Math.PI*2,taken:false});
         return;
       } else if (p.type==='key') {
@@ -4970,9 +5229,9 @@ function initSector93() {
         orb1.position.set(0.28,0.25,0.28); g.add(orb1);
         const orb2=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8),orbMat);
         orb2.position.set(-0.28,0.25,-0.28); g.add(orb2);
-        g.add(orbGlow.clone());
         orbGlow.position.set(0,0.3,0);
         g.add(orbGlow);
+        registerTransientLight(orbGlow);
         
         // Top accent ring (golden)
         const topRing=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.025,6,16),trimMat);
@@ -5003,7 +5262,9 @@ function initSector93() {
         p.mesh.position.y=p.baseY+Math.sin(elapsed*2.7+p.ph)*0.055;
       }
       if (Math.hypot(p.mesh.position.x-player.x,p.mesh.position.z-player.z)>0.44) return;
-      p.taken=true; if(p.mesh.parent) p.mesh.parent.remove(p.mesh);
+      p.taken=true;
+      unregisterTransientLights(p.mesh);
+      if(p.mesh.parent) p.mesh.parent.remove(p.mesh);
       if (p.type==='medkit') {
         player.health=Math.min(100,player.health+25);
         pkFlash.style.background='rgba(80,220,130,0.22)'; statusEl.textContent='Medkit — +25 HP';
@@ -5091,60 +5352,15 @@ function initSector93() {
   }
 
   // ── Camera ───────────────────────────────────────────────────────────────────
-  function updateCamera() {
+  function updateCamera(dt) {
     const bob=player.moving?Math.sin(player.bobPhase)*0.038:0;
     let sy=0,sp=0;
-    if (shake.sT>0){const s=shake.sT/0.12;sy+=(Math.random()-0.5)*shake.sS*s;sp+=(Math.random()-0.5)*shake.sS*s;shake.sT=Math.max(0,shake.sT-1/60);}
-    if (shake.hT>0){const s=shake.hT/0.14;sy+=(Math.random()-0.5)*shake.hS*s;sp+=(Math.random()-0.5)*shake.hS*s;shake.hT=Math.max(0,shake.hT-1/60);}
+    if (shake.sT>0){const s=shake.sT/0.12;sy+=(Math.random()-0.5)*shake.sS*s;sp+=(Math.random()-0.5)*shake.sS*s;shake.sT=Math.max(0,shake.sT-dt);}
+    if (shake.hT>0){const s=shake.hT/0.14;sy+=(Math.random()-0.5)*shake.hS*s;sp+=(Math.random()-0.5)*shake.hS*s;shake.hT=Math.max(0,shake.hT-dt);}
     camera.position.set(player.x,CAM_Y+bob+player.y,player.z);
     camera.rotation.set(player.pitch+sp,player.yaw+sy,0,'YXZ');
     camera.rotation.z=0;
     camera.up.set(0,1,0);
-  }
-
-  function heldPropDepth(root,maxDepth,probe=root){
-    root.updateWorldMatrix(true,false);
-    const worldPos=new THREE.Vector3(),rootWorldPos=new THREE.Vector3();
-    probe.getWorldPosition(worldPos);
-    root.getWorldPosition(rootWorldPos);
-    const dx=worldPos.x-camera.position.x, dz=worldPos.z-camera.position.z;
-    const distance=Math.hypot(dx,dz);
-    if (distance<0.01) return maxDepth;
-    const rootDistance=Math.hypot(rootWorldPos.x-camera.position.x,rootWorldPos.z-camera.position.z);
-    const probeOffset=Math.max(0,distance-rootDistance);
-    const steps=Math.max(2,Math.ceil(distance/0.035));
-    const propBuffer=0.08;
-    for(let i=1;i<=steps;i++){
-      const t=i/steps;
-      const px=camera.position.x+dx*t, pz=camera.position.z+dz*t;
-      const clipsWall=isWallAt(px-propBuffer,pz-propBuffer)
-        ||isWallAt(px+propBuffer,pz-propBuffer)
-        ||isWallAt(px-propBuffer,pz+propBuffer)
-        ||isWallAt(px+propBuffer,pz+propBuffer)
-        ||isWallAt(px-propBuffer,pz)||isWallAt(px+propBuffer,pz)
-        ||isWallAt(px,pz-propBuffer)||isWallAt(px,pz+propBuffer);
-      if(clipsWall){
-        return Math.max(0.16,Math.min(maxDepth,distance*t-0.12-probeOffset));
-      }
-    }
-    return maxDepth;
-  }
-  function heldPropTouchesWall(root,probe,radius){
-    root.updateWorldMatrix(true,false);
-    const rootPos=new THREE.Vector3(),probePos=new THREE.Vector3();
-    root.getWorldPosition(rootPos); probe.getWorldPosition(probePos);
-    const offsets=[[0,0],[radius,0],[-radius,0],[0,radius],[0,-radius],
-      [radius*0.7,radius*0.7],[-radius*0.7,radius*0.7],
-      [radius*0.7,-radius*0.7],[-radius*0.7,-radius*0.7]];
-    for(let i=0;i<=8;i++){
-      const t=i/8;
-      const px=rootPos.x+(probePos.x-rootPos.x)*t;
-      const pz=rootPos.z+(probePos.z-rootPos.z)*t;
-      for(const [ox,oz] of offsets){
-        if(isWallAt(px+ox,pz+oz)) return true;
-      }
-    }
-    return false;
   }
 
   function updatePlayerTorch(elapsed,dt){
@@ -5152,9 +5368,6 @@ function initSector93() {
     torchRig.position.x=-0.38+Math.sin(elapsed*2.7)*0.008;
     torchRig.position.y=-0.34+bob+Math.sin(elapsed*4.1)*0.006;
     torchRig.position.z=-0.54;
-    torchRig.position.z=-heldPropDepth(torchRig,0.54,carriedTorchFlame);
-    // Keep the torch visible at wall edges; its depth retracts instead of
-    // popping out of the player's hand.
     torchRig.visible=true;
     torchRig.rotation.z=-0.025+Math.sin(elapsed*2.1)*0.012;
     const flicker=0.94+Math.sin(elapsed*17.0)*0.035+Math.sin(elapsed*29.0)*0.025;
@@ -5179,15 +5392,7 @@ function initSector93() {
     crossbowRig.position.x=0.38+Math.sin(elapsed*2.4+1.2)*0.006;
     crossbowRig.position.y=-0.31+bob*0.8+Math.sin(elapsed*3.2+0.7)*0.004;
     crossbowKick=Math.max(0,crossbowKick-dt*2.8);
-    crossbowRig.position.z=-0.54;
-    const bowDepth=Math.min(
-      heldPropDepth(crossbowRig,0.54,crossbowMuzzle),
-      heldPropDepth(crossbowRig,0.54,crossbowLeftProbe),
-      heldPropDepth(crossbowRig,0.54,crossbowRightProbe)
-    );
-    crossbowRig.position.z=-Math.max(0.16,bowDepth-Math.min(crossbowKick,Math.max(0,bowDepth-0.16)));
-    // Keep the crossbow present while walking beside walls. Its depth is
-    // retracted against the muzzle clearance above rather than popping out.
+    crossbowRig.position.z=-0.54+crossbowKick;
     crossbowRig.visible=player.weaponMode===2&&meleeSwing<=0;
     crossbowRig.rotation.z=Math.sin(elapsed*2.2)*0.008;
     crossbowRig.rotation.x=-crossbowKick*0.65;
@@ -5212,10 +5417,6 @@ function initSector93() {
       meleeRig.visible=player.weaponMode===1;
       meleeRig.position.set(0.36,-0.30,-0.38);
       meleeRig.rotation.set(-0.04,-0.06,0.04);
-      // Retract so the blade does not clip into walls.
-      const swordNominal=0.38;
-      const swordDepth=heldPropDepth(meleeRig,swordNominal,swordTipProbe);
-      meleeRig.position.z=-Math.max(0.10,swordDepth);
     }
   }
 
@@ -5234,10 +5435,8 @@ function initSector93() {
     d.hp-=damage;
     // Hit confirm. Without this you cannot tell a landed arrow from a miss.
     if(d.hp>0) sfx.hit(e.position.x,e.position.z,Math.min(player.gunTier,6));
-    if(!d.origColor) d.origColor=e.material.color.clone();
     d.hitFlash=0.18;
     e.material.color.setHex(0xffffff);
-    setTimeout(()=>{if(d.origColor)e.material.color.copy(d.origColor);else e.material.color.setHex(0xffffff);},60);
     d.state='chase'; d.alertT=6;
     if(d.hp<=0) {
       d.alive=false; d.dying=1.0;
@@ -5778,7 +5977,7 @@ function initSector93() {
       if(player.moving){_stepAccum+=dt;if(_stepAccum>_nextStep){_stepAccum=0;_nextStep=0.34+Math.random()*0.08;sfx.footstep();}}
       else _stepAccum=0.2;
     }
-    updateGibs(dt); updateArrows(dt); updatePendingDamage(dt); updateCamera(); updatePlayerTorch(elapsed,dt); updateHud();
+    updateGibs(dt); updateArrows(dt); updatePendingDamage(dt); updateCamera(dt); updatePlayerTorch(elapsed,dt); updateHud();
     atmosphereAccum+=dt;
     if (atmosphereAccum>=1/30) { updateDampAtmosphere(elapsed,atmosphereAccum); atmosphereAccum=0; }
     torchAccum+=dt;

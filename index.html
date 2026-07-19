@@ -290,6 +290,7 @@
           <label class="setting-row"><span>Sharpness</span><select id="pixelRatioSetting"><option value="0.75">Soft · 0.75×</option><option value="1">Normal · 1×</option><option value="1.5">Sharp · 1.5×</option><option value="2">Crisp · 2×</option></select></label>
           <label class="setting-row"><span>Anti-aliasing</span><select id="aaSetting"><option value="off">Off</option><option value="msaa2">MSAA 2×</option><option value="msaa4">MSAA 4×</option><option value="smaa">SMAA (High)</option></select></label>
           <label class="setting-row"><span>Shadows</span><select id="shadowSetting"><option value="0">Off</option><option value="1">Low</option><option value="2">Medium</option><option value="3">High</option></select></label>
+          <label class="setting-row"><span>Frame cap</span><select id="frameCapSetting"><option value="60">60 FPS</option><option value="120">120 FPS</option><option value="144">144 FPS</option><option value="240">240 FPS</option><option value="0">Uncapped</option></select></label>
           <label class="setting-row"><span>Dynamic lights</span><select id="lightBudgetSetting"><option value="8">Few · 8</option><option value="14">Balanced · 14</option><option value="20">Many · 20</option><option value="28">Max · 28</option></select></label>
           <label class="setting-row"><span>Fog density</span><select id="fogSetting"><option value="0.18">Dense</option><option value="0.13">Balanced</option><option value="0.09">Clear</option></select></label>
           <label class="check-row"><input id="bloomSetting" type="checkbox" /> Bloom glow</label>
@@ -394,6 +395,7 @@ function initSector93() {
   const shadowSetting = document.getElementById('shadowSetting');
   const bloomSetting = document.getElementById('bloomSetting');
   const lightBudgetSetting = document.getElementById('lightBudgetSetting');
+  const frameCapSetting = document.getElementById('frameCapSetting');
 
   const SETTINGS_KEY='sector93.settings.v4';
   const LEGACY_SETTINGS_KEY_V3='sector93.settings.v3';
@@ -406,7 +408,8 @@ function initSector93() {
     shadows:true,         // real cast shadows from the nearest torch lights
     shadowQuality:2,      // shadow-caster budget: 0=off, 1 Low, 2 Med, 3 High
     pixelRatio:1,         // sharpness multiplier on the internal buffer (0.75–2)
-    lightBudget:14        // max simultaneously-lit dynamic lights
+    lightBudget:14,       // max simultaneously-lit dynamic lights
+    frameCap:0            // 0 = follow the display; opt in to a cap only if pacing misbehaves
   };
   try {
     const saved=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'null');
@@ -6118,6 +6121,7 @@ function initSector93() {
     shadowSetting.value=String(settings.shadows?(settings.shadowQuality||2):0);
     bloomSetting.checked=!!settings.bloom;
     lightBudgetSetting.value=String(settings.lightBudget);
+    frameCapSetting.value=String(settings.frameCap);
   }
   syncSettingsUI();
   [musicVolume,sfxVolume,ambientVolume].forEach(input=>input.addEventListener('input',()=>{
@@ -6151,6 +6155,7 @@ function initSector93() {
   });
   bloomSetting.addEventListener('change',()=>{settings.bloom=bloomSetting.checked;applyGraphicsSettings();});
   lightBudgetSetting.addEventListener('change',()=>{settings.lightBudget=Number(lightBudgetSetting.value);applyGraphicsSettings();});
+  frameCapSetting.addEventListener('change',()=>{settings.frameCap=Number(frameCapSetting.value);saveSettings();});
   settingsToggle.addEventListener('click',ev=>{
     ev.stopPropagation();
     const closing=!settingsPanel.hidden;
@@ -6387,13 +6392,32 @@ function initSector93() {
   ro.observe(gc);
 
   // ── Main loop ────────────────────────────────────────────────────────────────
+  // Frame cap. On a mixed-refresh multi-monitor desktop the browser does not
+  // reliably pace rAF to the display the window is actually on: measured on this
+  // desktop at 244Hz on a 60Hz panel (three of every four frames rendered and
+  // then discarded, so what reaches your eye is of arbitrary age) and at 59Hz on
+  // a 144Hz one, and the figures move between runs. The visible result is that
+  // mouse feel changes depending on which monitor you dragged the game to.
+  // Pacing off the clock instead of off the display makes the feel identical
+  // everywhere, at the cost of the top end on a high-refresh panel. That is a
+  // bad trade for the single-monitor majority, who never hit this, so the cap
+  // is opt-in: the default of 0 follows the display exactly as before.
+  let lastFrameAt=-Infinity;
+
   function animate() {
+    requestAnimationFrame(animate);
     // Do not spend CPU/GPU updating a hidden tab. The next animation frame
     // resumes normally when the page becomes visible again.
-    if (document.hidden) {
-      requestAnimationFrame(animate);
-      return;
-    }
+    if (document.hidden) return;
+    const frameMinMs=settings.frameCap>0?1000/settings.frameCap:0;
+    const frameNow=performance.now(), sinceLast=frameNow-lastFrameAt;
+    if (sinceLast<frameMinMs) return;
+    // Advance by whole frames so the cadence does not drift, but resync after a
+    // stall (alt-tab, level load) rather than trying to catch up on lost frames.
+    // Uncapped and post-stall both just take the current time.
+    lastFrameAt=(frameMinMs===0||sinceLast>frameMinMs*2)?frameNow:lastFrameAt+frameMinMs;
+    // getDelta is only called on frames we actually run, so it still returns the
+    // true wall-clock gap and every dt-scaled system stays correctly timed.
     const dt=Math.min(clock.getDelta(),0.05);
     const elapsed=performance.now()*0.001;
     
@@ -6459,7 +6483,6 @@ function initSector93() {
       } else _heartAccum=0;
     }
     if (usingComposer()) composer.render(); else renderer.render(scene,camera);
-    requestAnimationFrame(animate);
   }
 
 

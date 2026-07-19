@@ -6402,6 +6402,15 @@ function initSector93() {
   // everywhere, at the cost of the top end on a high-refresh panel. That is a
   // bad trade for the single-monitor majority, who never hit this, so the cap
   // is opt-in: the default of 0 follows the display exactly as before.
+  //
+  // The deadline is slackened by a fraction of a frame because a frame that
+  // arrives a hair early must still be taken. Testing exactly on the deadline
+  // beats badly whenever the cap and the refresh rate are close: at 60 on a
+  // 60Hz panel, sub-millisecond jitter made frames miss by a whisker and wait a
+  // whole extra vsync, measured as 54.6fps with 33ms stalls -- worse than not
+  // capping at all. The accumulator below still advances by exactly one frame,
+  // so the slack costs nothing in average rate.
+  const FRAME_SLOP=0.12;
   let lastFrameAt=-Infinity;
 
   function animate() {
@@ -6411,7 +6420,7 @@ function initSector93() {
     if (document.hidden) return;
     const frameMinMs=settings.frameCap>0?1000/settings.frameCap:0;
     const frameNow=performance.now(), sinceLast=frameNow-lastFrameAt;
-    if (sinceLast<frameMinMs) return;
+    if (sinceLast<frameMinMs*(1-FRAME_SLOP)) return;
     // Advance by whole frames so the cadence does not drift, but resync after a
     // stall (alt-tab, level load) rather than trying to catch up on lost frames.
     // Uncapped and post-stall both just take the current time.

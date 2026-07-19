@@ -1,7 +1,7 @@
 {
   "name": "castle-of-the-dreadkeep",
   "productName": "Castle of the Dreadkeep",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "A procedural medieval castle crawler — a retro raycaster-style FPS built with Three.js.",
   "author": "Dreadkeep Games",
   "license": "MIT",

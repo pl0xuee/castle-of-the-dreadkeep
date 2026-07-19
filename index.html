@@ -3569,12 +3569,19 @@ function initSector93() {
           const post=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.03,0.66,5),rackWood);
           post.position.set(pos.x+fx,0.33,pos.z+0.14); levelRoot.add(post);
         }
+        // Everything leans by +lean, toward the rail at +z. Rotating the shaft by
+        // -lean while placing the tip at +sin(lean) is what threw the spearheads
+        // off: it put each one about a third of a shaft's length past the end and
+        // on the wrong side, and tilted the shafts away from the rail they are
+        // supposed to be resting against.
+        const spearBaseZ=pos.z+0.035;   // close enough that the shafts touch the rail
         for(let sp=0;sp<3;sp++) {
           const bx=pos.x-0.18+sp*0.18;
           const spear=new THREE.Mesh(new THREE.CylinderGeometry(0.026,0.026,0.92,6),steel);
-          spear.position.set(bx,0.46,pos.z); spear.rotation.x=-lean; levelRoot.add(spear);
+          spear.position.set(bx,0.46,spearBaseZ); spear.rotation.x=lean; levelRoot.add(spear);
           const tip=new THREE.Mesh(new THREE.ConeGeometry(0.045,0.16,6),edge);
-          tip.position.set(bx,0.46+Math.cos(lean)*0.54,pos.z+Math.sin(lean)*0.54); tip.rotation.x=-lean; levelRoot.add(tip);
+          tip.position.set(bx,0.46+Math.cos(lean)*0.54,spearBaseZ+Math.sin(lean)*0.54);
+          tip.rotation.x=lean; levelRoot.add(tip);
         }
         addBoxCollider(pos.x,pos.z,0.56,0.3,0,0.02);
       } else if(type===6) {

@@ -961,82 +961,232 @@ function initSector93() {
   const torchBaseIntensity=1.5*LIGHT_SOURCE_BOOST;
   const torchSpotBaseIntensity=1.15*LIGHT_SOURCE_BOOST;
 
-  // Opposite-hand crossbow silhouette. It stays compact so the dungeon view and
-  // crosshair remain clear while the weapon still reads at pixel resolution.
+  // ── Crossbow viewmodel ──────────────────────────────────────────────────────
+  // Held low-right and canted inward so the tiller runs toward the crosshair
+  // instead of lying flat across the screen. Deliberately small and pushed back:
+  // the dungeon is dark and cramped, and a bulky rig covers the exact part of
+  // the view you aim with. All seven tiers share this geometry and re-skin
+  // through applyBowTier() — tiering up should be legible in your hands, not
+  // just in the HUD.
+  const CROSSBOW_HOME={x:0.33,y:-0.30,z:-0.56};
+  const CROSSBOW_TILT={x:0.06,y:0.15,z:-0.05};
   const crossbowRig=new THREE.Group();
-  crossbowRig.position.set(0.38,-0.31,-0.54);
-  crossbowRig.scale.setScalar(0.66);
+  crossbowRig.position.set(CROSSBOW_HOME.x,CROSSBOW_HOME.y,CROSSBOW_HOME.z);
+  crossbowRig.rotation.set(CROSSBOW_TILT.x,CROSSBOW_TILT.y,CROSSBOW_TILT.z);
+  crossbowRig.scale.setScalar(0.50);
   camera.add(crossbowRig);
-  const crossbowWood=new THREE.MeshStandardMaterial({color:0x4a2818,roughness:0.88,metalness:0.02});
-  const crossbowDark=new THREE.MeshStandardMaterial({color:0x1d1410,roughness:0.78,metalness:0.08});
-  const crossbowMetal=new THREE.MeshStandardMaterial({color:0x80633c,roughness:0.48,metalness:0.68});
-  const crossbowStock=new THREE.Mesh(new THREE.BoxGeometry(0.13,0.12,0.48),crossbowWood);
-  crossbowStock.position.set(0,0,-0.18); crossbowRig.add(crossbowStock);
-  const crossbowGrip=new THREE.Mesh(new THREE.BoxGeometry(0.09,0.22,0.1),crossbowWood);
-  crossbowGrip.position.set(0,-0.13,-0.03); crossbowGrip.rotation.z=-0.12; crossbowRig.add(crossbowGrip);
-  const crossbowHand=new THREE.Mesh(
-    new THREE.SphereGeometry(0.09,7,5),
-    new THREE.MeshStandardMaterial({color:0xd18b5b,roughness:0.82,metalness:0,emissive:0x1c0c06})
-  );
-  crossbowHand.scale.set(0.68,0.86,0.6);
-  crossbowHand.position.set(0,-0.08,0.09); crossbowRig.add(crossbowHand);
-  const crossbowRail=new THREE.Mesh(new THREE.BoxGeometry(0.045,0.025,0.42),crossbowMetal);
-  crossbowRail.position.set(0,0.075,-0.31); crossbowRig.add(crossbowRail);
-  const crossbowLimb=new THREE.Mesh(new THREE.BoxGeometry(0.56,0.05,0.065),crossbowDark);
-  crossbowLimb.position.set(0,0.04,-0.43); crossbowRig.add(crossbowLimb);
-  const crossbowLimbTop=new THREE.Mesh(new THREE.BoxGeometry(0.23,0.04,0.055),crossbowWood);
-  crossbowLimbTop.position.set(-0.16,0.075,-0.43); crossbowLimbTop.rotation.z=-0.18; crossbowRig.add(crossbowLimbTop);
-  const crossbowLimbBottom=crossbowLimbTop.clone();
-  crossbowLimbBottom.position.set(0.16,0.075,-0.43); crossbowLimbBottom.rotation.z=0.18; crossbowRig.add(crossbowLimbBottom);
-  const crossbowString=new THREE.Mesh(new THREE.BoxGeometry(0.48,0.012,0.012),crossbowMetal);
-  crossbowString.position.set(0,0.105,-0.44); crossbowRig.add(crossbowString);
-  const crossbowLatch=new THREE.Mesh(new THREE.BoxGeometry(0.075,0.06,0.075),crossbowMetal);
-  crossbowLatch.position.set(0,0.09,-0.08); crossbowRig.add(crossbowLatch);
+
+  const bowStockMat  =new THREE.MeshStandardMaterial({color:0x6b4a2a,roughness:0.86,metalness:0.03});
+  const bowProdMat   =new THREE.MeshStandardMaterial({color:0x4e3418,roughness:0.72,metalness:0.10});
+  const bowMetalMat  =new THREE.MeshStandardMaterial({color:0x6e6459,roughness:0.44,metalness:0.76});
+  const bowCordMat   =new THREE.MeshStandardMaterial({color:0xbfae8c,roughness:0.95,metalness:0.0});
+  const bowLeatherMat=new THREE.MeshStandardMaterial({color:0x2c1a0e,roughness:0.93,metalness:0.0});
+  const bowAccentMat =new THREE.MeshStandardMaterial({color:0x33281c,roughness:0.45,metalness:0.55,emissive:0x000000});
+  const bowHandMat   =new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
+
+  // Tier skins. The palette stays inside the grounded-medieval range: the
+  // progression reads as better materials (ash → seasoned oak → bone → blackened
+  // steel), and only the top four tiers carry any emissive at all, kept dim so
+  // the crossbow never turns into a lamp that fights the torch.
+  const BOW_TIER_LOOKS=[
+    {stock:0x6b4a2a,prod:0x4e3418,metal:0x6e6459,cord:0xbfae8c,accent:0x33281c,glow:0x000000}, // Shortbow
+    {stock:0x53381f,prod:0x3a2712,metal:0x7d7264,cord:0xc7b894,accent:0x4a3a24,glow:0x000000}, // Longbow
+    {stock:0x6d6350,prod:0xa79c82,metal:0x8b8574,cord:0xd8cfb4,accent:0xb6ad93,glow:0x000000}, // Bone Bow
+    {stock:0x241d2a,prod:0x171320,metal:0x4b4458,cord:0x8a80a0,accent:0x6a4ea8,glow:0x2a1450}, // Shadow Bow
+    {stock:0x2a1a12,prod:0x1b100a,metal:0x6b4030,cord:0xc08050,accent:0xc4551c,glow:0x6e2004}, // Hellfire Bow
+    {stock:0x2f3a44,prod:0x1f2830,metal:0x9fb4c4,cord:0xcfe0ec,accent:0x5fa8d8,glow:0x164460}, // Storm Bow
+    {stock:0x1a1622,prod:0x100d18,metal:0x6f6488,cord:0xa898d8,accent:0x9a72ff,glow:0x3a1f9e}, // Void Bow
+  ];
+
+  // Stock: three blocks stepping down in section from butt to prod, so the
+  // silhouette tapers instead of reading as one slab.
+  const bowButt=new THREE.Mesh(new THREE.BoxGeometry(0.105,0.150,0.11),bowStockMat);
+  bowButt.position.set(0,-0.015,0.150); crossbowRig.add(bowButt);
+  const bowButtCap=new THREE.Mesh(new THREE.BoxGeometry(0.112,0.156,0.022),bowMetalMat);
+  bowButtCap.position.set(0,-0.015,0.207); crossbowRig.add(bowButtCap);
+  const bowStock=new THREE.Mesh(new THREE.BoxGeometry(0.095,0.108,0.30),bowStockMat);
+  bowStock.position.set(0,0.005,-0.055); crossbowRig.add(bowStock);
+  const bowTiller=new THREE.Mesh(new THREE.BoxGeometry(0.082,0.078,0.16),bowStockMat);
+  bowTiller.position.set(0,0.022,-0.275); crossbowRig.add(bowTiller);
+
+  // Bolt channel — two raised walls with a metal groove between them. This is
+  // the detail that makes the shape read as a crossbow at a glance.
+  const bowGroove=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.014,0.50),bowMetalMat);
+  bowGroove.position.set(0,0.070,-0.115); crossbowRig.add(bowGroove);
+  [-0.031,0.031].forEach(dx=>{
+    const wall=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.034,0.50),bowStockMat);
+    wall.position.set(dx,0.076,-0.115); crossbowRig.add(wall);
+  });
+
+  // Tier inlay runs down both flanks of the stock — hidden on the two plain
+  // wooden tiers, where an inlay would be a lie about what you are carrying.
+  const bowInlay=new THREE.Group();
+  [-0.050,0.050].forEach(dx=>{
+    const strip=new THREE.Mesh(new THREE.BoxGeometry(0.006,0.026,0.20),bowAccentMat);
+    strip.position.set(dx,0.006,-0.045); bowInlay.add(strip);
+  });
+  crossbowRig.add(bowInlay);
+
+  // Nut, trigger and guard.
+  const bowNut=new THREE.Mesh(new THREE.CylinderGeometry(0.036,0.036,0.072,8),bowMetalMat);
+  bowNut.rotation.z=Math.PI/2; bowNut.position.set(0,0.072,-0.020); crossbowRig.add(bowNut);
+  const bowTrigger=new THREE.Mesh(new THREE.BoxGeometry(0.018,0.085,0.026),bowMetalMat);
+  bowTrigger.rotation.x=0.30; bowTrigger.position.set(0,-0.078,-0.010); crossbowRig.add(bowTrigger);
+  const bowGuard=new THREE.Mesh(new THREE.TorusGeometry(0.058,0.009,4,10,Math.PI),bowMetalMat);
+  bowGuard.rotation.set(0,Math.PI/2,Math.PI); bowGuard.position.set(0,-0.052,-0.010);
+  crossbowRig.add(bowGuard);
+
+  // Grip and fist. A blocked-in hand with a thumb reads far better than the old
+  // squashed sphere, which at this size just looked like a stray pebble.
+  const bowGrip=new THREE.Mesh(new THREE.BoxGeometry(0.072,0.155,0.082),bowLeatherMat);
+  bowGrip.rotation.x=0.20; bowGrip.position.set(0,-0.115,0.098); crossbowRig.add(bowGrip);
+  const bowFist=new THREE.Mesh(new THREE.BoxGeometry(0.098,0.115,0.115),bowHandMat);
+  bowFist.rotation.x=0.16; bowFist.position.set(0,-0.108,0.100); crossbowRig.add(bowFist);
+  const bowThumb=new THREE.Mesh(new THREE.BoxGeometry(0.036,0.040,0.062),bowHandMat);
+  bowThumb.rotation.set(0.22,0,0.30); bowThumb.position.set(-0.048,-0.062,0.076);
+  crossbowRig.add(bowThumb);
+  [-0.030,0.000,0.030].forEach(dy=>{
+    const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.022,0.118),bowHandMat);
+    knuckle.rotation.x=0.16; knuckle.position.set(0.050,-0.108+dy,0.100);
+    crossbowRig.add(knuckle);
+  });
+
+  // Prod — swept back from the centre lath rather than a flat crossbar, with
+  // metal tip caps and a cord lashing where it seats into the tiller.
+  const bowProdCentre=new THREE.Mesh(new THREE.BoxGeometry(0.13,0.048,0.070),bowProdMat);
+  bowProdCentre.position.set(0,0.040,-0.360); crossbowRig.add(bowProdCentre);
+  const bowLashing=new THREE.Mesh(new THREE.BoxGeometry(0.098,0.062,0.026),bowLeatherMat);
+  bowLashing.position.set(0,0.040,-0.328); crossbowRig.add(bowLashing);
+  const BOW_LIMB_TIP=[];
+  [-1,1].forEach(side=>{
+    const limb=new THREE.Mesh(new THREE.BoxGeometry(0.26,0.040,0.056),bowProdMat);
+    limb.position.set(side*0.128,0.040,-0.350);
+    limb.rotation.y=-side*0.20;
+    limb.rotation.z=side*0.05;
+    crossbowRig.add(limb);
+    const tipX=side*0.252, tipZ=-0.324;
+    const cap=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.044,0.044),bowMetalMat);
+    cap.position.set(tipX,0.042,tipZ); crossbowRig.add(cap);
+    BOW_LIMB_TIP.push({x:tipX,z:tipZ});
+  });
+
+  // String: a V pinned at the nut, reaching each limb tip. Built as a group so
+  // release can throw the whole span forward and flatten it in one step.
+  const crossbowStringGroup=new THREE.Group();
+  crossbowStringGroup.position.set(0,0.072,-0.020); crossbowRig.add(crossbowStringGroup);
+  BOW_LIMB_TIP.forEach(tip=>{
+    const dx=tip.x, dz=tip.z+0.020;
+    const len=Math.hypot(dx,dz);
+    const half=new THREE.Mesh(new THREE.BoxGeometry(len,0.010,0.010),bowCordMat);
+    half.position.set(dx/2,0,dz/2);
+    half.rotation.y=Math.atan2(-dz,dx);
+    crossbowStringGroup.add(half);
+  });
+
+  // Loaded bolt sitting in the channel — vanishes the instant it is loosed.
+  const crossbowBolt=new THREE.Group();
+  crossbowBolt.position.set(0,0.088,0); crossbowRig.add(crossbowBolt);
+  const boltShaft=new THREE.Mesh(new THREE.CylinderGeometry(0.009,0.009,0.30,6),bowStockMat);
+  boltShaft.rotation.x=Math.PI/2; boltShaft.position.z=-0.175; crossbowBolt.add(boltShaft);
+  const boltHead=new THREE.Mesh(new THREE.ConeGeometry(0.014,0.048,4),bowMetalMat);
+  boltHead.rotation.x=-Math.PI/2; boltHead.position.z=-0.348; crossbowBolt.add(boltHead);
+  [0,Math.PI/2].forEach(rot=>{
+    const vane=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.003,0.048),bowLeatherMat);
+    vane.rotation.z=rot; vane.position.z=-0.048; crossbowBolt.add(vane);
+  });
+
+  // Stirrup at the nose — the loop you brace with your boot to span the string.
+  const bowStirrup=new THREE.Mesh(new THREE.TorusGeometry(0.062,0.010,4,10,Math.PI),bowMetalMat);
+  bowStirrup.rotation.z=Math.PI; bowStirrup.position.set(0,0.030,-0.415);
+  crossbowRig.add(bowStirrup);
+
   const crossbowMuzzle=new THREE.Object3D();
-  crossbowMuzzle.position.set(0,0.075,-0.46); crossbowRig.add(crossbowMuzzle);
-  const crossbowLeftProbe=new THREE.Object3D();
-  crossbowLeftProbe.position.set(-0.28,0.075,-0.43); crossbowRig.add(crossbowLeftProbe);
-  const crossbowRightProbe=new THREE.Object3D();
-  crossbowRightProbe.position.set(0.28,0.075,-0.43); crossbowRig.add(crossbowRightProbe);
+  crossbowMuzzle.position.set(0,0.085,-0.44); crossbowRig.add(crossbowMuzzle);
   crossbowRig.traverse(child=>{if(child.isMesh) child.frustumCulled=false;});
   let crossbowKick=0;
 
-  // Dagger — held low-right, blade pointing forward at the target.
+  function applyBowTier(tier){
+    const look=BOW_TIER_LOOKS[Math.max(0,Math.min(tier|0,BOW_TIER_LOOKS.length-1))];
+    bowStockMat.color.setHex(look.stock);
+    bowProdMat.color.setHex(look.prod);
+    bowMetalMat.color.setHex(look.metal);
+    bowCordMat.color.setHex(look.cord);
+    bowAccentMat.color.setHex(look.accent);
+    bowAccentMat.emissive.setHex(look.glow);
+    bowInlay.visible=tier>=2;
+  }
+  applyBowTier(0);
+
+  // ── Dagger viewmodel ────────────────────────────────────────────────────────
+  // Canted up and inward in the right hand so the point sits just off the
+  // crosshair. The blade is a four-sided taper rather than a box, which gives a
+  // real diamond section: a bright ridge down the centre and darker bevels
+  // either side, so it catches the torch instead of reading as a grey plank.
+  const MELEE_HOME={x:0.31,y:-0.31,z:-0.42};
+  const MELEE_TILT={x:0.10,y:0.22,z:-0.16};
   const meleeRig=new THREE.Group();
-  meleeRig.position.set(0.36,-0.30,-0.38);
-  meleeRig.rotation.set(-0.04,-0.06,0.04);
+  meleeRig.position.set(MELEE_HOME.x,MELEE_HOME.y,MELEE_HOME.z);
+  meleeRig.rotation.set(MELEE_TILT.x,MELEE_TILT.y,MELEE_TILT.z);
+  meleeRig.scale.setScalar(0.92);
   camera.add(meleeRig);
-  const daggerLeatherMat=new THREE.MeshStandardMaterial({color:0x3d1c0a,roughness:0.88,metalness:0.0});
-  const daggerWrapMat   =new THREE.MeshStandardMaterial({color:0x140908,roughness:0.94,metalness:0.0});
-  const daggerGoldMat   =new THREE.MeshStandardMaterial({color:0xc49a30,roughness:0.36,metalness:0.88});
-  const daggerBladeMat  =new THREE.MeshStandardMaterial({color:0xdde4e8,roughness:0.16,metalness:0.94});
-  const daggerFullerMat =new THREE.MeshStandardMaterial({color:0xa0abb2,roughness:0.38,metalness:0.70});
-  // Grip
-  const daggerGrip=new THREE.Mesh(new THREE.CylinderGeometry(0.026,0.032,0.16,8),daggerLeatherMat);
-  daggerGrip.rotation.x=Math.PI/2; daggerGrip.position.z=0.04; meleeRig.add(daggerGrip);
-  // Wrap rings
-  [-0.00,0.04,0.08].forEach(dz=>{
-    const wrap=new THREE.Mesh(new THREE.CylinderGeometry(0.031,0.031,0.014,8),daggerWrapMat);
-    wrap.rotation.x=Math.PI/2; wrap.position.z=dz; meleeRig.add(wrap);
+  const daggerLeatherMat=new THREE.MeshStandardMaterial({color:0x3a2010,roughness:0.90,metalness:0.0});
+  const daggerWrapMat   =new THREE.MeshStandardMaterial({color:0x17100c,roughness:0.95,metalness:0.0});
+  const daggerSteelMat  =new THREE.MeshStandardMaterial({color:0x8d8577,roughness:0.42,metalness:0.80});
+  const daggerBrassMat  =new THREE.MeshStandardMaterial({color:0xa8823a,roughness:0.40,metalness:0.85});
+  const daggerBladeMat  =new THREE.MeshStandardMaterial({color:0xc9d2d8,roughness:0.20,metalness:0.92});
+  const daggerHandMat   =new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
+
+  // Blade — a 4-gon cylinder scaled wide and thin. Points sit on ±X (the edges)
+  // and ±Z (the central ridge), so the taper and the section come for free.
+  const daggerBlade=new THREE.Mesh(new THREE.CylinderGeometry(0.011,0.030,0.30,4),daggerBladeMat);
+  daggerBlade.rotation.x=-Math.PI/2;
+  daggerBlade.scale.set(1.5,1,0.42);
+  daggerBlade.position.set(0,0,-0.205); meleeRig.add(daggerBlade);
+  const daggerPoint=new THREE.Mesh(new THREE.CylinderGeometry(0.0015,0.011,0.085,4),daggerBladeMat);
+  daggerPoint.rotation.x=-Math.PI/2;
+  daggerPoint.scale.set(1.5,1,0.42);
+  daggerPoint.position.set(0,0,-0.398); meleeRig.add(daggerPoint);
+  // Ricasso — the unsharpened stub where the blade meets the guard.
+  const daggerRicasso=new THREE.Mesh(new THREE.BoxGeometry(0.038,0.020,0.048),daggerSteelMat);
+  daggerRicasso.position.set(0,0,-0.038); meleeRig.add(daggerRicasso);
+
+  // Guard — a centre block with quillons raked forward toward the point.
+  const daggerGuardCentre=new THREE.Mesh(new THREE.BoxGeometry(0.052,0.034,0.036),daggerBrassMat);
+  daggerGuardCentre.position.set(0,0,-0.008); meleeRig.add(daggerGuardCentre);
+  [-1,1].forEach(side=>{
+    const quillon=new THREE.Mesh(new THREE.BoxGeometry(0.072,0.022,0.026),daggerBrassMat);
+    quillon.position.set(side*0.056,0,-0.020);
+    quillon.rotation.y=side*0.30;
+    meleeRig.add(quillon);
+    const finial=new THREE.Mesh(new THREE.OctahedronGeometry(0.019,0),daggerBrassMat);
+    finial.position.set(side*0.094,0,-0.031); meleeRig.add(finial);
   });
-  // Pommel — disk shape
-  const daggerPommel=new THREE.Mesh(new THREE.CylinderGeometry(0.038,0.038,0.022,8),daggerGoldMat);
-  daggerPommel.rotation.x=Math.PI/2; daggerPommel.position.z=0.13; meleeRig.add(daggerPommel);
-  // Guard — simple compact crossbar, no angled quillons
-  const daggerGuard=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.024,0.032),daggerGoldMat);
-  daggerGuard.position.z=-0.04; meleeRig.add(daggerGuard);
-  // Blade
-  const daggerBlade=new THREE.Mesh(new THREE.BoxGeometry(0.048,0.028,0.30),daggerBladeMat);
-  daggerBlade.position.set(0,0,-0.21); meleeRig.add(daggerBlade);
-  // Fuller groove
-  const daggerFuller=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.012,0.26),daggerFullerMat);
-  daggerFuller.position.set(0,0.008,-0.19); meleeRig.add(daggerFuller);
-  // Tip
-  const daggerTip=new THREE.Mesh(new THREE.ConeGeometry(0.032,0.092,4),daggerBladeMat);
-  daggerTip.rotation.x=-Math.PI/2; daggerTip.position.z=-0.40; meleeRig.add(daggerTip);
-  // Probe for wall retraction
-  const swordTipProbe=new THREE.Object3D();
-  swordTipProbe.position.z=-0.46; meleeRig.add(swordTipProbe);
+
+  // Grip — waisted leather over a core, bound with wire at both ends.
+  const daggerGrip=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.023,0.145,8),daggerLeatherMat);
+  daggerGrip.rotation.x=Math.PI/2; daggerGrip.position.z=0.084; meleeRig.add(daggerGrip);
+  [0.026,0.048,0.122,0.142].forEach(dz=>{
+    const wrap=new THREE.Mesh(new THREE.TorusGeometry(0.027,0.0045,4,10),daggerWrapMat);
+    wrap.position.z=dz; meleeRig.add(wrap);
+  });
+  // Pommel — faceted, weighted, sized to balance the blade visually.
+  const daggerPommel=new THREE.Mesh(new THREE.CylinderGeometry(0.030,0.038,0.030,6),daggerBrassMat);
+  daggerPommel.rotation.x=Math.PI/2; daggerPommel.position.z=0.172; meleeRig.add(daggerPommel);
+  const daggerButton=new THREE.Mesh(new THREE.OctahedronGeometry(0.017,0),daggerBrassMat);
+  daggerButton.position.z=0.196; meleeRig.add(daggerButton);
+
+  // Fist closed around the grip, matching the crossbow hand so the two weapons
+  // read as belonging to the same character.
+  const daggerFist=new THREE.Mesh(new THREE.BoxGeometry(0.088,0.100,0.105),daggerHandMat);
+  daggerFist.position.set(0,-0.004,0.088); meleeRig.add(daggerFist);
+  const daggerThumb=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.036,0.056),daggerHandMat);
+  daggerThumb.rotation.z=0.34; daggerThumb.position.set(-0.044,0.036,0.052);
+  meleeRig.add(daggerThumb);
+  [-0.028,0.000,0.028].forEach(dy=>{
+    const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.013,0.020,0.108),daggerHandMat);
+    knuckle.position.set(0.045,-0.004+dy,0.088); meleeRig.add(knuckle);
+  });
+
   meleeRig.traverse(child=>{if(child.isMesh) child.frustumCulled=false;});
   meleeRig.visible=false;
     let meleeSwing=0;
@@ -1314,8 +1464,82 @@ function initSector93() {
     t.minFilter=t.magFilter=THREE.LinearFilter; return t;
   })();
 
+  // Hearth stonework: irregular coursed ashlar with broken bond and chipped
+  // arrises, deliberately coarser than wallTex so a fireplace reads as dressed
+  // masonry set into the wall rather than more of the same wall. Greyscale, so
+  // the stone and trim materials tint the one canvas warm or cold. No soot is
+  // baked in -- staining that dark would band badly once the tile repeats up
+  // the chimney breast, so it lives on the firebox texture instead.
+  const hearthStoneTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#3f3d3a'; ctx.fillRect(0,0,64,64);            // mortar bed
+    const bh=16;
+    for (let row=0;row<4;row++) {
+      const y=row*bh, off=(row%2)*12;
+      for (let col=-1;col<4;col++) {
+        const s=row*61+col*127+7;
+        const bw=18+Math.floor(sr(s)*10);                        // uneven courses
+        const x=col*24+off;
+        const L=126+Math.floor(sr(s*3)*58);
+        ctx.fillStyle=`rgb(${L},${L},${L})`;
+        ctx.fillRect(x+1,y+1,bw-2,bh-2);
+        ctx.fillStyle='rgba(255,255,255,0.14)';                  // lit top arris
+        ctx.fillRect(x+1,y+1,bw-2,2);
+        ctx.fillStyle='rgba(0,0,0,0.44)';                        // shaded underside
+        ctx.fillRect(x+1,y+bh-3,bw-2,2); ctx.fillRect(x+bw-3,y+1,2,bh-2);
+        for (let i=0;i<7;i++) {                                  // tooling pits
+          const p=s*7+i*17;
+          ctx.fillStyle=`rgba(0,0,0,${(0.06+sr(p)*0.17).toFixed(3)})`;
+          ctx.fillRect(x+2+sr(p*3)*(bw-6), y+2+sr(p*5)*(bh-6), 1+sr(p*2)*3, 1+sr(p*4)*2);
+        }
+        if (sr(s*13)>0.70) {                                     // chipped corner
+          ctx.fillStyle='rgba(0,0,0,0.36)';
+          ctx.fillRect(x+bw-6,y+1,4,3);
+        }
+      }
+    }
+    return mkTex(c);
+  })();
+  const hearthTrimTex = (() => { const t=hearthStoneTex.clone(); t.needsUpdate=true; t.repeat.set(3,1); return t; })();
+
+  // Firebox lining: fire-cracked stone buried under soot, with ash bloom and a
+  // few surviving hot flecks. Used on the back plate and the jambs, which is
+  // what sells the fireplace as something that has actually been burning.
+  const hearthSootTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#241f1b'; ctx.fillRect(0,0,64,64);
+    for (let i=0;i<26;i++) {                                     // scorched mottling
+      const s=i*31+13, x=sr(s)*64, y=sr(s*3)*64, r=3+sr(s*5)*9;
+      const v=Math.floor(18+sr(s*7)*46);
+      ctx.fillStyle=`rgba(${v},${Math.floor(v*0.88)},${Math.floor(v*0.78)},0.55)`;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    for (let i=0;i<11;i++) {                                     // heat cracks
+      const s=i*47+5;
+      ctx.strokeStyle=`rgba(0,0,0,${(0.45+sr(s)*0.35).toFixed(2)})`; ctx.lineWidth=1;
+      ctx.beginPath();
+      let cx=sr(s)*64, cy=sr(s*3)*64;
+      ctx.moveTo(cx,cy);
+      for (let k=0;k<4;k++) { cx+=(sr(s*5+k)-0.5)*18; cy+=(sr(s*7+k)-0.5)*18; ctx.lineTo(cx,cy); }
+      ctx.stroke();
+    }
+    for (let i=0;i<40;i++) {                                     // ash bloom
+      const s=i*23+3;
+      ctx.fillStyle=`rgba(196,188,176,${(0.05+sr(s*11)*0.13).toFixed(3)})`;
+      ctx.fillRect(sr(s)*64, sr(s*3)*64, 1+sr(s*5)*2, 1+sr(s*7)*2);
+    }
+    for (let i=0;i<7;i++) {                                      // surviving embers
+      const s=i*67+21;
+      ctx.fillStyle=`rgba(${190+Math.floor(sr(s)*60)},${70+Math.floor(sr(s*3)*50)},24,${(0.30+sr(s*5)*0.34).toFixed(2)})`;
+      ctx.fillRect(sr(s*7)*62, 34+sr(s*11)*28, 1+sr(s*13)*2, 1+sr(s*17)*2);
+    }
+    return mkTex(c);
+  })();
+
   // Shared textures that persist across levels and must never be disposed on level clear.
-  const PERSISTENT_MAPS = new Set([wallTex, floorTex, ceilTex, woodGrainTex, rugWeaveTex, fabricTex, glowTex, mossPatchTex, wetStreakTex]);
+  const PERSISTENT_MAPS = new Set([wallTex, floorTex, ceilTex, woodGrainTex, rugWeaveTex, fabricTex, glowTex, mossPatchTex, wetStreakTex, hearthStoneTex, hearthTrimTex, hearthSootTex]);
 
   const wallMat = new THREE.MeshStandardMaterial({map:wallTex,color:0xb8c2b5,roughness:0.72,metalness:0.11,side:THREE.DoubleSide});
   const PERSISTENT_MATERIALS = new Set([wallMat]);
@@ -2860,10 +3084,14 @@ function initSector93() {
 
   function addFireplaces(fps) {
     fps.forEach(f=>{
-      const base=new THREE.Mesh(new THREE.BoxGeometry(0.58,0.18,0.58),new THREE.MeshStandardMaterial({color:0x1a1a1a,roughness:0.92,metalness:0.2}));
+      // Same charred lining as the wall hearths, so the hand-authored braziers
+      // sit in the same material world as the generated ones.
+      const base=new THREE.Mesh(new THREE.BoxGeometry(0.58,0.18,0.58),new THREE.MeshStandardMaterial({map:hearthStoneTex,color:0x4a453f,roughness:0.92,metalness:0.06}));
       base.position.set(f.x,0.09,f.z); levelRoot.add(base);
       const rim=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.28,0.08,6),new THREE.MeshStandardMaterial({color:0x2a2020,roughness:0.85,metalness:0.4}));
       rim.position.set(f.x,0.2,f.z); levelRoot.add(rim);
+      const coals=new THREE.Mesh(new THREE.CylinderGeometry(0.26,0.24,0.05,6),new THREE.MeshStandardMaterial({map:hearthSootTex,color:0xa89c90,roughness:0.98,metalness:0}));
+      coals.position.set(f.x,0.25,f.z); levelRoot.add(coals);
       const fl=new THREE.Mesh(new THREE.SphereGeometry(0.22,10,8),new THREE.MeshBasicMaterial({color:0xff7722,transparent:true,opacity:0.9}));
       fl.position.set(f.x,0.42,f.z); levelRoot.add(fl);
       const aura=addGlowSprite(levelRoot,0xff5d1f,1.5,f.x,0.48,f.z,0.34);
@@ -3581,16 +3809,23 @@ function initSector93() {
     function addHearth(f){
       const rot=f.rot, nx=Math.sin(rot), nz=Math.cos(rot), tx=Math.cos(rot), tz=-Math.sin(rot);
       const g=new THREE.Group();
-      const stone=new THREE.MeshStandardMaterial({color:0x625c53,roughness:0.93,metalness:0.02});
-      const stoneDark=new THREE.MeshStandardMaterial({color:0x36322e,roughness:0.95,metalness:0.02});
-      const soot=new THREE.MeshStandardMaterial({color:0x191512,roughness:0.98,metalness:0});
+      // Masonry is mapped rather than flat-shaded: at torch range an untextured
+      // breast is a grey slab, and the hearth is the one prop the player stands
+      // still and looks at. Trim uses a tighter repeat so the dressed lintel and
+      // mantel read as smaller worked blocks than the rubble breast behind them.
+      const stone=new THREE.MeshStandardMaterial({map:hearthStoneTex,color:0x8f867a,roughness:0.93,metalness:0.02});
+      const stoneDark=new THREE.MeshStandardMaterial({map:hearthTrimTex,color:0x565049,roughness:0.95,metalness:0.02});
+      const soot=new THREE.MeshStandardMaterial({map:hearthSootTex,color:0xb0a89e,roughness:0.98,metalness:0});
       const breast=new THREE.Mesh(new THREE.BoxGeometry(1.46,2.05,0.4),stone); breast.position.set(0,1.02,0.2); g.add(breast);
       const chimney=new THREE.Mesh(new THREE.BoxGeometry(1.06,WALL_H-2.05,0.3),stone); chimney.position.set(0,2.05+(WALL_H-2.05)/2,0.15); g.add(chimney);
       const back=new THREE.Mesh(new THREE.PlaneGeometry(0.84,0.86),soot); back.position.set(0,0.45,0.405); g.add(back);
       const lintel=new THREE.Mesh(new THREE.BoxGeometry(1.1,0.16,0.14),stoneDark); lintel.position.set(0,0.95,0.42); g.add(lintel);
-      for(const s of [-1,1]){ const jamb=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.9,0.14),stoneDark); jamb.position.set(s*0.48,0.45,0.42); g.add(jamb); }
+      for(const s of [-1,1]){ const jamb=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.9,0.14),soot); jamb.position.set(s*0.48,0.45,0.42); g.add(jamb); }
       const mantel=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.09,0.5),stoneDark); mantel.position.set(0,1.08,0.25); g.add(mantel);
       const slab=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.05,0.62),stoneDark); slab.position.set(0,0.025,0.5); g.add(slab);
+      // Ash bed under the logs, so the firebox floor is not bare trim stone.
+      const ashBed=new THREE.Mesh(new THREE.BoxGeometry(0.80,0.045,0.34),soot);
+      ashBed.position.set(0,0.045,0.40); g.add(ashBed);
       const logMat=new THREE.MeshStandardMaterial({color:0x4a2f18,map:woodGrainTex,roughness:0.95,metalness:0});
       for(const [lx,ly,lr] of [[-0.12,0.1,0.5],[0.14,0.1,-0.4],[0,0.2,0.1]]){
         const log=new THREE.Mesh(new THREE.CylinderGeometry(0.055,0.06,0.5,6),logMat);
@@ -5389,34 +5624,44 @@ function initSector93() {
     carriedTorchLickB.position.y=0.204+Math.sin(elapsed*19.0+0.8)*0.008;
     carriedTorchLickB.rotation.z=0.22+Math.sin(elapsed*12.0+0.5)*0.18;
     carriedTorchLickB.scale.set(0.82+flicker*0.16,0.86+flicker*0.22,0.82+flicker*0.16);
-    crossbowRig.position.x=0.38+Math.sin(elapsed*2.4+1.2)*0.006;
-    crossbowRig.position.y=-0.31+bob*0.8+Math.sin(elapsed*3.2+0.7)*0.004;
-    crossbowKick=Math.max(0,crossbowKick-dt*2.8);
-    crossbowRig.position.z=-0.54+crossbowKick;
+    // crossbowKick is normalised 0..1 and decays over roughly a quarter second,
+    // so every recoil offset below is expressed as a fraction of a full kick.
+    crossbowKick=Math.max(0,crossbowKick-dt*4.2);
     crossbowRig.visible=player.weaponMode===2&&meleeSwing<=0;
-    crossbowRig.rotation.z=Math.sin(elapsed*2.2)*0.008;
-    crossbowRig.rotation.x=-crossbowKick*0.65;
-    crossbowString.position.y=0.105-crossbowKick*0.20;
+    crossbowRig.position.x=CROSSBOW_HOME.x+Math.sin(elapsed*2.4+1.2)*0.005;
+    crossbowRig.position.y=CROSSBOW_HOME.y+bob*0.8+Math.sin(elapsed*3.2+0.7)*0.004;
+    crossbowRig.position.z=CROSSBOW_HOME.z+crossbowKick*0.13;
+    crossbowRig.rotation.x=CROSSBOW_TILT.x-crossbowKick*0.30;
+    crossbowRig.rotation.z=CROSSBOW_TILT.z+Math.sin(elapsed*2.2)*0.008;
+    // Release throws the string off the nut to the prod and straightens the V;
+    // watching it get re-spanned is the reload tell, so no HUD glance needed.
+    crossbowStringGroup.position.z=-crossbowKick*0.34;
+    crossbowStringGroup.scale.z=1-crossbowKick*0.92;
+    // The nocked bolt vanishes the moment it is loosed and only reappears once
+    // the string is back — and never at all when the quiver is dry.
+    crossbowBolt.visible=player.ammo>0&&crossbowKick<0.55;
     if(meleeSwing>0) {
-      // Dagger stab: thrust straight forward then pull back to ready.
+      // Dagger stab: the point swings in from its resting cant and squares up
+      // as it drives forward, so the thrust lands straight down the crosshair
+      // rather than arriving at an angle.
       meleeSwing=Math.max(0,meleeSwing-dt*7.5);
       const swing=1-meleeSwing;
       const stab=Math.min(1,swing/0.40);
       const pull=Math.max(0,(swing-0.40)/0.60);
       const stabEase=stab*stab*(3-2*stab);
       const pullEase=pull*pull*(3-2*pull);
+      const reach=stabEase-pullEase;
       meleeRig.visible=true;
-      // Thrust forward along z, slight upward tilt at full extension.
-      meleeRig.position.x=0.36-0.04*stabEase+0.04*pullEase;
-      meleeRig.position.y=-0.30+0.02*stabEase-0.02*pullEase;
-      meleeRig.position.z=-0.38-0.42*stabEase+0.42*pullEase;
-      meleeRig.rotation.x=-0.04-0.08*stabEase+0.08*pullEase;
-      meleeRig.rotation.y=-0.06+0.03*stabEase-0.03*pullEase;
-      meleeRig.rotation.z=0.04;
+      meleeRig.position.x=MELEE_HOME.x-0.10*reach;
+      meleeRig.position.y=MELEE_HOME.y+0.05*reach;
+      meleeRig.position.z=MELEE_HOME.z-0.44*reach;
+      meleeRig.rotation.x=MELEE_TILT.x-0.14*reach;
+      meleeRig.rotation.y=MELEE_TILT.y-0.20*reach;
+      meleeRig.rotation.z=MELEE_TILT.z+0.13*reach;
     } else {
       meleeRig.visible=player.weaponMode===1;
-      meleeRig.position.set(0.36,-0.30,-0.38);
-      meleeRig.rotation.set(-0.04,-0.06,0.04);
+      meleeRig.position.set(MELEE_HOME.x,MELEE_HOME.y,MELEE_HOME.z);
+      meleeRig.rotation.set(MELEE_TILT.x,MELEE_TILT.y,MELEE_TILT.z);
     }
   }
 
@@ -5487,7 +5732,7 @@ function initSector93() {
     const T=Math.max(0,Math.min(player.gunTier,6));
     player.shootCd=SHOOT_CD[T];
     player.recoil=0.28;
-    crossbowKick=0.12+Math.min(0.04,T*0.006);
+    crossbowKick=1;
     sfx.shoot(T);
     // Magical arrow flash only for T3+
     if(T>=3){ muzzleLight.color.setHex(T===4?0xff2200:0x8833cc); muzzleLight.intensity=T===4?1.0:0.7; }
@@ -5550,6 +5795,11 @@ function initSector93() {
       hudState.gunTier=player.gunTier;
       if (bowRankEl) bowRankEl.textContent=bowTierBadges[Math.min(player.gunTier,bowTierBadges.length-1)]||'I';
       syncTierTrack(bowTierTrack, player.gunTier);
+      applyBowTier(player.gunTier);
+      // The held bow is re-skinned on upgrade, so the name has to follow even
+      // when the weapon mode has not changed -- otherwise you pick up a Void Bow
+      // and the HUD keeps insisting you are holding a Shortbow.
+      if (weaponNameEl&&player.weaponMode===2) weaponNameEl.textContent=bowNames[Math.min(player.gunTier,bowNames.length-1)];
     }
     if (hudState.weaponMode!==player.weaponMode) {
       hudState.weaponMode=player.weaponMode;

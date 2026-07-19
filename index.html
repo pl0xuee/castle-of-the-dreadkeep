@@ -1004,6 +1004,65 @@ function initSector93() {
   const torchBaseIntensity=1.5*LIGHT_SOURCE_BOOST;
   const torchSpotBaseIntensity=1.15*LIGHT_SOURCE_BOOST;
 
+  // ── Shared hand ─────────────────────────────────────────────────────────────
+  // One material and one builder for every weapon hand. These used to be
+  // copy-pasted per weapon and kept in sync by a comment, which is exactly the
+  // kind of coupling that silently rots — the two hands had already drifted
+  // apart in size, cant and thumb angle.
+  //
+  // makeFist() returns a fist wrapping a grip that runs along the group's local
+  // +Y. Callers orient the group to their own grip axis and scale it to the
+  // weapon.
+  //
+  // `side` is which way the back of the hand faces, and it matters more than it
+  // looks. Both rigs hang off +X while the camera sits at the origin, so the
+  // player only ever sees their -X flank. Building the palm outboard puts the
+  // fingertips pointing straight at the eye, which reads as a claw hooked under
+  // the weapon rather than a hand holding it. Default -1 keeps the back of the
+  // hand and the thumb toward the camera, with the fingers wrapping away around
+  // the far side — what you actually see holding something in your own hand.
+  //
+  // The fingers deliberately sink into the grip rather than clearing its front
+  // face; a hand that floats a hair off the thing it holds reads as detached at
+  // any distance, and nobody can see the intersection anyway.
+  const HAND_MAT=new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
+  function makeFist({reach=0.046,wrist=true,side=-1}={}){
+    const hand=new THREE.Group();
+    const palm=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.108,0.092),HAND_MAT);
+    palm.position.set(side*(reach+0.002),0,0.004); hand.add(palm);
+    // Longest at the index and tapering to the little finger, so the fist has
+    // some shape instead of reading as an evenly-milled block.
+    [{y:0.034,len:0.082,z:-0.040},
+     {y:0.011,len:0.086,z:-0.042},
+     {y:-0.012,len:0.082,z:-0.040},
+     {y:-0.035,len:0.072,z:-0.036}].forEach(f=>{
+      const finger=new THREE.Mesh(new THREE.BoxGeometry(f.len,0.019,0.026),HAND_MAT);
+      finger.position.set(side*(reach-f.len/2),f.y,f.z); hand.add(finger);
+      const tip=new THREE.Mesh(new THREE.BoxGeometry(0.024,0.019,0.026),HAND_MAT);
+      tip.position.set(side*(reach-f.len-0.010),f.y,f.z+0.022); hand.add(tip);
+      // Knuckle proud of the back of the hand. Without these the palm turns its
+      // one big flat face to the camera and reads as a card rather than a fist —
+      // worst on whichever weapon is held closest to the eye.
+      const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.015,0.017,0.022),HAND_MAT);
+      knuckle.position.set(side*(reach+0.019),f.y,f.z+0.030); hand.add(knuckle);
+    });
+    // Thumb lies over the top of the fingers rather than sticking out sideways.
+    const thumb=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.058,0.032),HAND_MAT);
+    thumb.rotation.set(-0.12,0,side*0.60);
+    thumb.position.set(side*(reach-0.020),0.044,-0.038); hand.add(thumb);
+    // Without a wrist the hand ends in a flat face and reads as detached. Weapons
+    // whose forearm runs along the grip axis opt out and supply their own.
+    if(wrist){
+      // Kept small and tucked in behind the fist. Sized up it catches the torch
+      // broadside and reads as a paddle stuck to the weapon, which pulls the eye
+      // harder than the missing wrist it is there to hide.
+      const forearm=new THREE.Mesh(new THREE.BoxGeometry(0.056,0.058,0.070),HAND_MAT);
+      forearm.rotation.x=0.34; forearm.position.set(side*(reach-0.018),-0.034,0.072);
+      hand.add(forearm);
+    }
+    return hand;
+  }
+
   // ── Crossbow viewmodel ──────────────────────────────────────────────────────
   // Held low-right and canted inward so the tiller runs toward the crosshair
   // instead of lying flat across the screen. Deliberately small and pushed back:
@@ -1025,7 +1084,6 @@ function initSector93() {
   const bowCordMat   =new THREE.MeshStandardMaterial({color:0xbfae8c,roughness:0.95,metalness:0.0});
   const bowLeatherMat=new THREE.MeshStandardMaterial({color:0x2c1a0e,roughness:0.93,metalness:0.0});
   const bowAccentMat =new THREE.MeshStandardMaterial({color:0x33281c,roughness:0.45,metalness:0.55,emissive:0x000000});
-  const bowHandMat   =new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
 
   // Tier skins. The palette stays inside the grounded-medieval range: the
   // progression reads as better materials (ash → seasoned oak → bone → blackened
@@ -1079,20 +1137,13 @@ function initSector93() {
   bowGuard.rotation.set(0,Math.PI/2,Math.PI); bowGuard.position.set(0,-0.052,-0.010);
   crossbowRig.add(bowGuard);
 
-  // Grip and fist. A blocked-in hand with a thumb reads far better than the old
-  // squashed sphere, which at this size just looked like a stray pebble.
+  // Leather grip, with the hand sharing its cant so the two cannot drift apart.
   const bowGrip=new THREE.Mesh(new THREE.BoxGeometry(0.072,0.155,0.082),bowLeatherMat);
   bowGrip.rotation.x=0.20; bowGrip.position.set(0,-0.115,0.098); crossbowRig.add(bowGrip);
-  const bowFist=new THREE.Mesh(new THREE.BoxGeometry(0.098,0.115,0.115),bowHandMat);
-  bowFist.rotation.x=0.16; bowFist.position.set(0,-0.108,0.100); crossbowRig.add(bowFist);
-  const bowThumb=new THREE.Mesh(new THREE.BoxGeometry(0.036,0.040,0.062),bowHandMat);
-  bowThumb.rotation.set(0.22,0,0.30); bowThumb.position.set(-0.048,-0.062,0.076);
-  crossbowRig.add(bowThumb);
-  [-0.030,0.000,0.030].forEach(dy=>{
-    const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.022,0.118),bowHandMat);
-    knuckle.rotation.x=0.16; knuckle.position.set(0.050,-0.108+dy,0.100);
-    crossbowRig.add(knuckle);
-  });
+
+  // Vertical grip, so the canonical hand needs only the grip's own cant.
+  const bowHand=makeFist();
+  bowHand.rotation.x=0.20; bowHand.position.set(0,-0.100,0.096); crossbowRig.add(bowHand);
 
   // Prod — swept back from the centre lath rather than a flat crossbar, with
   // metal tip caps and a cord lashing where it seats into the tiller.
@@ -1177,7 +1228,6 @@ function initSector93() {
   const daggerSteelMat  =new THREE.MeshStandardMaterial({color:0x8d8577,roughness:0.42,metalness:0.80});
   const daggerBrassMat  =new THREE.MeshStandardMaterial({color:0xa8823a,roughness:0.40,metalness:0.85});
   const daggerBladeMat  =new THREE.MeshStandardMaterial({color:0xc9d2d8,roughness:0.20,metalness:0.92});
-  const daggerHandMat   =new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
 
   // Blade — a 4-gon cylinder scaled wide and thin. Points sit on ±X (the edges)
   // and ±Z (the central ridge), so the taper and the section come for free.
@@ -1218,17 +1268,25 @@ function initSector93() {
   const daggerButton=new THREE.Mesh(new THREE.OctahedronGeometry(0.017,0),daggerBrassMat);
   daggerButton.position.z=0.196; meleeRig.add(daggerButton);
 
-  // Fist closed around the grip, matching the crossbow hand so the two weapons
-  // read as belonging to the same character.
-  const daggerFist=new THREE.Mesh(new THREE.BoxGeometry(0.088,0.100,0.105),daggerHandMat);
-  daggerFist.position.set(0,-0.004,0.088); meleeRig.add(daggerFist);
-  const daggerThumb=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.036,0.056),daggerHandMat);
-  daggerThumb.rotation.z=0.34; daggerThumb.position.set(-0.044,0.036,0.052);
-  meleeRig.add(daggerThumb);
-  [-0.028,0.000,0.028].forEach(dy=>{
-    const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.013,0.020,0.108),daggerHandMat);
-    knuckle.position.set(0.045,-0.004+dy,0.088); meleeRig.add(knuckle);
-  });
+  // Hammer grip. This grip runs along Z rather than standing vertical like the
+  // crossbow's, so the canonical hand is rolled a quarter turn onto that axis:
+  // fingers end up curling under the grip and the thumb lies forward along it
+  // toward the guard. Scaled down to suit a grip thinner than the crossbow's —
+  // the same hand, sized to what it is holding.
+  const daggerHand=makeFist({wrist:false});
+  daggerHand.rotation.x=-Math.PI/2;
+  daggerHand.scale.setScalar(0.85);
+  daggerHand.position.set(0,-0.004,0.088); meleeRig.add(daggerHand);
+  // Forearm runs back along the grip axis past the pommel, where a real one
+  // would sit, rather than out the back of the knuckles.
+  // Kept narrower than the pommel so the pommel still reads proud of the wrist
+  // instead of being swallowed, and raked down toward the shoulder.
+  // Dimensions carry the hand's own 0.85 factor: this hangs off the rig rather
+  // than off the hand group, so it does not inherit that scale automatically and
+  // would otherwise sit a size too large on the end of its own wrist.
+  const daggerWrist=new THREE.Mesh(new THREE.BoxGeometry(0.053,0.056,0.081),HAND_MAT);
+  daggerWrist.rotation.x=0.18; daggerWrist.position.set(-0.006,-0.008,0.222);
+  meleeRig.add(daggerWrist);
 
   meleeRig.traverse(child=>{if(child.isMesh) child.frustumCulled=false;});
   meleeRig.visible=false;

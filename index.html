@@ -88,10 +88,35 @@
     #sFlash{position:absolute;inset:0;background:radial-gradient(circle at center,rgba(255,250,200,0.8),rgba(255,220,100,0.3));opacity:0;transition:opacity 60ms linear;pointer-events:none;box-shadow:inset 0 0 30px rgba(255,240,100,0.4)}
     #hFlash{position:absolute;inset:0;background:radial-gradient(circle at center,rgba(110,0,0,0) 28%,rgba(119,16,10,.5) 100%);opacity:0;transition:opacity 90ms ease-out;pointer-events:none}
     #pkFlash{position:absolute;inset:0;opacity:0;transition:opacity 120ms ease-out;pointer-events:none}
-    .sov{position:absolute;inset:0;display:grid;place-items:center;
+    /* Overlay cards scroll rather than clip. `safe center` is the load-bearing
+       part: plain centering pushes the top of an over-tall card above the
+       container, where no amount of scrolling can reach it -- so in a short
+       window the Settings panel would open with its heading cut off and the
+       Done button stranded below the fold. `safe` centers while it fits and
+       falls back to top-aligned the moment it does not. */
+    .sov{position:absolute;inset:0;display:grid;justify-items:center;align-items:safe center;
       background:linear-gradient(180deg,rgba(3,2,1,.42),rgba(5,4,3,.94)),radial-gradient(circle at 50% 32%,rgba(119,70,24,.12),transparent 46%);
-      text-align:center;padding:24px;pointer-events:auto;z-index:5;transition:opacity 140ms ease}
+      text-align:center;padding:24px;pointer-events:auto;z-index:5;transition:opacity 140ms ease;
+      overflow-y:auto;overscroll-behavior:contain}
     .sov.hidden{opacity:0;pointer-events:none}
+    .sov::-webkit-scrollbar{width:10px}
+    .sov::-webkit-scrollbar-track{background:rgba(3,2,1,.5)}
+    .sov::-webkit-scrollbar-thumb{background:rgba(140,100,50,.5);border:2px solid rgba(3,2,1,.6)}
+    .sov::-webkit-scrollbar-thumb:hover{background:rgba(178,132,66,.68)}
+    /* Short windows: claw back vertical space before falling back to scrolling,
+       so the common case still fits on screen without one. */
+    @media(max-height:720px){
+      .card{padding:18px 22px 16px}
+      .control-list{gap:4px 8px}
+      .splash-ornament{margin-bottom:8px}
+      #startLbList{max-height:96px}
+    }
+    @media(max-height:560px){
+      .sov{padding:12px}
+      .card{padding:14px 18px 12px}
+      .splash-ornament,.splash-kicker{display:none}
+      #startLeaderboard{display:none}
+    }
     #restartCountdown{position:absolute;inset:0;display:grid;place-items:center;z-index:8;background:rgba(3,2,1,.46);pointer-events:none}
     #restartCountdown[hidden]{display:none}
     .restart-clock{position:relative;display:grid;place-items:center;width:132px;height:132px;border:3px solid rgba(209,167,91,.45);border-radius:50%;background:
@@ -143,6 +168,17 @@
     .settings-panel[hidden]{display:none}
     .settings-panel h3{font-size:.76rem;letter-spacing:.14em;text-transform:uppercase;color:#d0a86a;margin-bottom:10px}
     .settings-group{display:grid;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid rgba(153,110,57,.3)}
+    /* The Updates group is the first div inside its own wrapper, so it picks up
+       the :first-of-type reset above and loses the separator every other group
+       has. Put it back so the section matches Audio and Graphics. */
+    #updateSection .settings-group{margin-top:12px;padding-top:10px;border-top:1px solid rgba(153,110,57,.3)}
+    .update-button{margin-top:0;width:100%}
+    /* An update waiting is the one thing in Settings worth drawing the eye to,
+       so it gets the brass treatment the plain secondary buttons do not. */
+    .update-button.has-update{border-color:#d8a850;color:#ffe9b4;box-shadow:0 0 12px rgba(200,150,60,.28)}
+    .update-button[disabled]{opacity:.6;cursor:default}
+    .update-status{font-size:.72rem;line-height:1.5;color:#9c8a6b;min-height:1.1em}
+    .update-status.is-error{color:#d98a6a}
     .settings-group:first-of-type{margin-top:0;padding-top:0;border-top:0}
     .setting-row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;font-size:.74rem;color:#c8b897}
     .setting-row input[type=range]{grid-column:1/-1;width:100%;accent-color:#b78b4a}
@@ -258,6 +294,13 @@
           <label class="setting-row"><span>Fog density</span><select id="fogSetting"><option value="0.18">Dense</option><option value="0.13">Balanced</option><option value="0.09">Clear</option></select></label>
           <label class="check-row"><input id="bloomSetting" type="checkbox" /> Bloom glow</label>
           <label class="check-row"><input id="pixelSetting" type="checkbox" /> Crisp pixel rendering</label>
+        </div>
+        <div id="updateSection" hidden>
+          <h3 style="margin-top:14px">Updates</h3>
+          <div class="settings-group">
+            <button id="updateBtn" class="secondary-button update-button" type="button">Check for updates</button>
+            <div id="updateStatus" class="update-status" aria-live="polite"></div>
+          </div>
         </div>
         <button id="settingsDone" class="secondary-button" type="button">Done</button>
       </div>
@@ -6060,6 +6103,93 @@ function initSector93() {
   });
   settingsPanel.addEventListener('click',ev=>ev.stopPropagation());
   settingsPanel.addEventListener('keydown',ev=>ev.stopPropagation());
+
+  // ── Updates ────────────────────────────────────────────────────────────────
+  // window.gameUpdater only exists under Electron (see electron/preload.js), so
+  // the whole section stays hidden in a plain browser rather than offering a
+  // button that could never do anything.
+  {
+    const updateSection=document.getElementById('updateSection');
+    const updateBtn=document.getElementById('updateBtn');
+    const updateStatus=document.getElementById('updateStatus');
+    const bridge=window.gameUpdater;
+    if (bridge && updateSection) {
+      let version='', busy=false;
+      const say=(text,isError)=>{
+        updateStatus.textContent=text;
+        updateStatus.classList.toggle('is-error',Boolean(isError));
+      };
+      const rest=(pending)=>{
+        busy=false;
+        updateBtn.disabled=false;
+        updateBtn.classList.toggle('has-update',Boolean(pending));
+        updateBtn.textContent=pending?`Update to v${pending}`:'Check for updates';
+        if (pending) say(`Version ${pending} is available — you have v${version}.`);
+      };
+      bridge.state().then(s=>{
+        version=s.version||'';
+        updateSection.hidden=false;
+        say(`Version ${version}`);
+        rest(s.pending);
+        // A build that cannot replace itself still gets the button — it falls
+        // back to opening the releases page, which beats a dead end — but say so
+        // rather than implying a restart will do it.
+        if (!s.supported) say(`Version ${version} — this build updates manually.`);
+      }).catch(()=>{ /* no updater: leave the section hidden */ });
+
+      bridge.onAvailable(v=>{ if(!busy) rest(v); });
+      bridge.onProgress(p=>{
+        if (p===null||p===undefined) return;
+        updateBtn.textContent=`Downloading ${p}%`;
+        say('Downloading the update — the game stays playable meanwhile.');
+      });
+
+      updateBtn.addEventListener('click',async ev=>{
+        ev.stopPropagation();
+        if (busy) return;
+        busy=true;
+        updateBtn.disabled=true;
+        updateBtn.classList.remove('has-update');
+        updateBtn.textContent='Checking…';
+        say('Contacting GitHub…');
+        let res;
+        try {
+          res=await bridge.check();
+        } catch (err) {
+          res={state:'error',message:String(err&&err.message||err)};
+        }
+        switch (res.state) {
+          case 'up-to-date':
+            rest(null);
+            say(`Version ${res.version} — you're up to date.`);
+            break;
+          case 'installing':
+            // The app is on its way out; leave the button frozen so a second
+            // click can't race the restart.
+            updateBtn.textContent='Restarting…';
+            say(`Installing v${res.version}…`);
+            break;
+          case 'ready':
+            // Downloaded, restart declined. autoInstallOnAppQuit applies it later.
+            rest(null);
+            updateBtn.textContent='Restart to finish';
+            say(`Version ${res.version} installs the next time you quit.`);
+            break;
+          case 'manual':
+            rest(null);
+            say(`Version ${res.version} is available — download it from the releases page.`);
+            break;
+          case 'busy':
+            rest(null);
+            say('A check is already running.');
+            break;
+          default:
+            rest(null);
+            say(res.message?`Update check failed: ${res.message}`:'Update check failed.',true);
+        }
+      });
+    }
+  }
   settingsDone.addEventListener('click',ev=>{
     ev.stopPropagation(); settingsPanel.hidden=true; settingsToggle.setAttribute('aria-expanded','false');
   });

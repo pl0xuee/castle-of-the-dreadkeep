@@ -59,6 +59,33 @@ function mimeFor(filePath) {
   return MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
 }
 
+// Content-Security-Policy. The renderer previously ran with none at all, which is
+// what Electron's security warning was reporting. Set here rather than as a meta
+// tag so every response is covered uniformly, packaged and unpackaged alike.
+//
+// script-src is 'self' plus one hash. The game code now lives in
+// assets/game.js so it needs no exception, but the import map must stay inline --
+// browsers do not support external import maps, and the vendored three.js addons
+// import the bare specifier 'three', so the map is load-bearing. Its hash covers
+// the exact text between the importmap script tags: if that JSON is ever edited,
+// recompute it or the module graph will fail to resolve.
+//
+// style-src needs 'unsafe-inline' for the inline <style> block and a handful of
+// style="" attributes. That permits no code execution, so it is a fair trade.
+// Canvas-generated textures need no allowance: they are drawn with 2D context
+// calls and handed straight to WebGL, never round-tripping through a data: URI.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'sha256-ytg5gfleLygJnXv2zIgoQkF7eeOp+5BoeJbaAitWpOs='",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'"
+].join('; ');
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -73,6 +100,14 @@ function createWindow() {
       sandbox: true
     }
   });
+
+  // The window had no navigation policy at all. The game never navigates or opens
+  // popups -- external links already go through shell.openExternal in the main
+  // process -- so deny both outright. Without this, anything that managed to
+  // navigate the renderer would get the preload bridge handed to it, including the
+  // update channel that triggers a real download-and-install.
+  win.webContents.on('will-navigate', (ev) => ev.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   win.once('ready-to-show', () => win.show());
   win.loadURL('app://bundle/index.html');
@@ -94,7 +129,10 @@ app.whenReady().then(() => {
       const data = await fs.readFile(filePath);
       return new Response(data, {
         status: 200,
-        headers: { 'content-type': mimeFor(filePath) }
+        headers: {
+          'content-type': mimeFor(filePath),
+          'content-security-policy': CSP
+        }
       });
     } catch (err) {
       const status = err && err.code === 'ENOENT' ? 404 : 500;

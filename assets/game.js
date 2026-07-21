@@ -1,0 +1,6836 @@
+import * as THREE from './vendor/three.module.js';
+import { EffectComposer } from './vendor/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from './vendor/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from './vendor/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from './vendor/jsm/postprocessing/OutputPass.js';
+import { SMAAPass } from './vendor/jsm/postprocessing/SMAAPass.js';
+
+function initSector93() {
+
+  // ── DOM ──────────────────────────────────────────────────────────────────────
+  const gc        = document.getElementById('gc');
+  const startPr   = document.getElementById('startPrompt');
+  const sFlash    = document.getElementById('sFlash');
+  const hFlash    = document.getElementById('hFlash');
+  const pkFlash   = document.getElementById('pkFlash');
+  const screenFx  = document.getElementById('screenFx');
+  const fpsCounter= document.getElementById('fpsCounter');
+  const hpValEl   = document.getElementById('hpVal');
+  const armorValEl= document.getElementById('armorVal');
+  const bowAmmoValEl = document.getElementById('bowAmmoVal');
+  const killValEl = document.getElementById('killVal');
+  const statusEl  = document.getElementById('statusText');
+  const hpFill    = document.querySelector('#hpBar > span');
+  const amFill    = document.querySelector('#amBar > span');
+  const bowTierTrack = document.getElementById('bowTierTrack');
+  const armorTierTrack = document.getElementById('armorTierTrack');
+  const stateOv   = document.getElementById('stateOv');
+  const stTitle   = document.getElementById('stTitle');
+  const stStats   = document.getElementById('stStats');
+  const stBtn     = document.getElementById('stBtn');
+  const keyStatus = document.getElementById('keyStatus');
+  const bowRankEl = document.getElementById('bowRank');
+  const weaponNameEl = document.getElementById('weaponName');
+  const lbForm    = document.getElementById('lbForm');
+  const lbName    = document.getElementById('lbName');
+  const lbMsg     = document.getElementById('lbMsg');
+  const lbList    = document.getElementById('lbList');
+  const leaderboardWrap = document.getElementById('leaderboardWrap');
+  const startLbList = document.getElementById('startLbList');
+  const startBtn = document.getElementById('startBtn');
+  const settingsToggle = document.getElementById('settingsToggle');
+  const settingsPanel = document.getElementById('settingsPanel');
+  const settingsDone = document.getElementById('settingsDone');
+  const stContinue = document.getElementById('stContinue');
+  const restartCountdown = document.getElementById('restartCountdown');
+  const restartCountdownValue = document.getElementById('restartCountdownValue');
+  const musicVolume = document.getElementById('musicVolume');
+  const sfxVolume = document.getElementById('sfxVolume');
+  const ambientVolume = document.getElementById('ambientVolume');
+  const musicVolumeValue = document.getElementById('musicVolumeValue');
+  const sfxVolumeValue = document.getElementById('sfxVolumeValue');
+  const ambientVolumeValue = document.getElementById('ambientVolumeValue');
+  const resolutionSetting = document.getElementById('resolutionSetting');
+  const fogSetting = document.getElementById('fogSetting');
+  const sensSetting = document.getElementById('sensSetting');
+  const sensValue = document.getElementById('sensValue');
+  const invertYSetting = document.getElementById('invertYSetting');
+  const pixelSetting = document.getElementById('pixelSetting');
+  const pixelRatioSetting = document.getElementById('pixelRatioSetting');
+  const aaSetting = document.getElementById('aaSetting');
+  const shadowSetting = document.getElementById('shadowSetting');
+  const bloomSetting = document.getElementById('bloomSetting');
+  const lightBudgetSetting = document.getElementById('lightBudgetSetting');
+  const frameCapSetting = document.getElementById('frameCapSetting');
+
+  const SETTINGS_KEY='sector93.settings.v4';
+  const LEGACY_SETTINGS_KEY_V3='sector93.settings.v3';
+  const LEGACY_SETTINGS_KEY='sector93.settings.v2';
+  const settings={
+    renderScale:2.8,fogDensity:0.13,pixelated:true,music:0.5,sfx:0.5,ambient:0.5,
+    // Graphics upgrade (v4): all live-toggleable from the settings menu.
+    bloom:true,           // post-processing glow on flames/torches/magic
+    aa:'msaa2',           // 'off' | 'msaa2' | 'msaa4' | 'smaa'
+    shadows:true,         // real cast shadows from the nearest torch lights
+    shadowQuality:2,      // shadow-caster budget: 0=off, 1 Low, 2 Med, 3 High
+    pixelRatio:1,         // sharpness multiplier on the internal buffer (0.75–2)
+    lightBudget:14,       // max simultaneously-lit dynamic lights
+    frameCap:0,           // 0 = follow the display; opt in to a cap only if pacing misbehaves
+    // Look controls. There was no sensitivity option at all: the scalars were
+    // hardcoded, so feel depended entirely on the player's mouse DPI. The two axes
+    // also used DIFFERENT scalars (0.0025 yaw vs 0.0022 pitch), which reads as
+    // vertical aim being subtly sluggish; they now share one base.
+    sensitivity:1.0,      // multiplier on the base look scalar
+    invertY:false         // invert vertical look
+  };
+  const LOOK_BASE=0.0025;
+  // Snapshot before anything persisted is merged in, so validation has a clean
+  // value to fall back to per field.
+  const DEFAULT_SETTINGS=Object.freeze({...settings});
+  try {
+    const saved=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'null');
+    if (saved) Object.assign(settings,saved);
+    else {
+      // Carry forward audio/fog/resolution prefs from older schema versions.
+      const v3=JSON.parse(localStorage.getItem(LEGACY_SETTINGS_KEY_V3)||'null');
+      if (v3) Object.assign(settings,{renderScale:v3.renderScale,fogDensity:v3.fogDensity,pixelated:v3.pixelated,music:v3.music,sfx:v3.sfx,ambient:v3.ambient});
+      else {
+        const legacy=JSON.parse(localStorage.getItem(LEGACY_SETTINGS_KEY)||'null');
+        if (legacy) Object.assign(settings,{renderScale:legacy.renderScale,fogDensity:legacy.fogDensity,pixelated:legacy.pixelated});
+      }
+    }
+  } catch(_) {}
+  // Persisted settings were merged in with a bare Object.assign and no validation,
+  // so a corrupt or hand-edited store could inject values the UI cannot produce.
+  // renderScale is the dangerous one: onResize divides by it, so a 0 yields
+  // Infinity, and setting a canvas dimension to Infinity collapses it to 0 -- a
+  // blank screen with no in-game way to recover. Clamp everything back into range.
+  (function validateSettings(){
+    const numeric={renderScale:[1,4],fogDensity:[0,0.6],pixelRatio:[0.5,3],
+                   lightBudget:[1,64],frameCap:[0,480],shadowQuality:[0,3],
+                   music:[0,1],sfx:[0,1],ambient:[0,1],sensitivity:[0.1,5]};
+    for (const [k,[lo,hi]] of Object.entries(numeric)) {
+      const v=settings[k];
+      if (typeof v!=='number'||!isFinite(v)||v<lo||v>hi) settings[k]=DEFAULT_SETTINGS[k];
+    }
+    for (const k of ['pixelated','shadows','v','invertY','bloom']) {
+      if (k in settings && typeof settings[k]!=='boolean' && typeof DEFAULT_SETTINGS[k]==='boolean')
+        settings[k]=DEFAULT_SETTINGS[k];
+    }
+    if (typeof settings.aa!=='string') settings.aa=DEFAULT_SETTINGS.aa;
+  })();
+  // Keep the crunchy pixel look and anti-aliasing from fighting each other.
+  if (settings.pixelated && (settings.aa!=='off' || settings.pixelRatio>1)) settings.pixelated=false;
+  const saveSettings=()=>{try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));}catch(_) {}}
+
+  // ── Three.js ─────────────────────────────────────────────────────────────────
+  const scene    = new THREE.Scene();
+  scene.background = new THREE.Color(0x000000);
+  scene.fog = new THREE.FogExp2(0x000000, settings.fogDensity);
+
+  const camera = new THREE.PerspectiveCamera(72, 1, 0.08, 80);
+  camera.up.set(0,1,0);
+  scene.add(camera);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(settings.pixelRatio||1);
+  renderer.setSize(320, 240, false);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.58;
+  renderer.shadowMap.enabled = !!settings.shadows;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.autoUpdate = true;
+  renderer.domElement.style.imageRendering = settings.pixelated?'pixelated':'auto';
+  gc.prepend(renderer.domElement);
+
+  // ── Post-processing composer (bloom + AA) ─────────────────────────────────────
+  // The core three.module.js has no post-processing; the addons are vendored under
+  // assets/vendor/jsm and resolve 'three' via the import map above. The composer is
+  // rebuilt whenever AA changes (sample count is baked into the render targets), so
+  // it lives behind buildComposer() and is driven live from applyGraphicsSettings().
+  let composer=null, bloomPass=null, smaaPass=null;
+  const AA_SAMPLES={off:0,msaa2:2,msaa4:4,smaa:0};
+  function buildComposer() {
+    if (composer) {
+      // composer.dispose() only frees its own two render targets — each pass
+      // owns further targets/materials that would leak across AA/bloom setting
+      // changes without an explicit dispose.
+      for (const pass of composer.passes) pass.dispose?.();
+      composer.dispose?.(); composer=null; bloomPass=null; smaaPass=null;
+    }
+    const size=new THREE.Vector2(); renderer.getSize(size);
+    const samples=AA_SAMPLES[settings.aa]??0;
+    composer=new EffectComposer(renderer);
+    composer.setPixelRatio(renderer.getPixelRatio());
+    if (samples>0){ composer.renderTarget1.samples=samples; composer.renderTarget2.samples=samples; }
+    composer.addPass(new RenderPass(scene,camera));
+    // Tuned for this dark, torch-lit interior: only near-white hot pixels bloom.
+    // Strength kept moderate so the torch held right at the camera doesn't blow out.
+    bloomPass=new UnrealBloomPass(new THREE.Vector2(size.x,size.y),0.62,0.5,0.88);
+    bloomPass.enabled=!!settings.bloom;
+    composer.addPass(bloomPass);
+    // OutputPass applies tone mapping + color space for the composed HDR buffer,
+    // matching the renderer's ACES/exposure so bloom-on and bloom-off look alike.
+    composer.addPass(new OutputPass());
+    if (settings.aa==='smaa'){ smaaPass=new SMAAPass(size.x,size.y); composer.addPass(smaaPass); }
+    composer.setSize(size.x,size.y);
+  }
+  // Whether the composed path is needed at all this frame.
+  function usingComposer(){ return !!(settings.bloom || settings.aa==='smaa' || (AA_SAMPLES[settings.aa]??0)>0); }
+  buildComposer();
+
+  // ── Constants ────────────────────────────────────────────────────────────────
+  const WALL_H    = 3.3;
+  const CAM_Y     = 1.05;
+  const WALL_BUFFER = 0.14;
+  const MAX_PITCH = 1.22;
+  const TORCH_DT  = 1 / 30;
+  let TORCH_LIGHT_BUDGET = settings.lightBudget||14;
+  // How many of the nearest lit torches also cast real shadows (cube shadow maps
+  // are 6 passes each, so this is capped hard and independently of the visibility
+  // budget above). Driven by settings.shadowQuality.
+  let TORCH_SHADOW_BUDGET = settings.shadows?(settings.shadowQuality||0):0;
+  const JUMP_GRAVITY = 9.5;
+  const JUMP_VELOCITY = 4.15;
+  const JUMP_MAX_Y = 1.6;
+  const ENEMY_STEP_HEIGHT = 0.5;
+  // Enemy collision radius. Was hand-copied as a bare 0.26 into spawn validation,
+  // the recovery search, the flee search and the movement loop -- four places that
+  // must agree, or enemies pick spots they then cannot stand in.
+  const ENEMY_RADIUS = 0.26;
+
+  // Enemy type definitions: hp, speed, damage, attackCooldown, attackRange, scaleX/Y, colour
+  //
+  // The roster is the *primary* difficulty curve: MOB_ROSTER below introduces these
+  // types one at a time across levels 1-15, so the mix you fight drifts from all
+  // grunts to mostly fiends/goliaths. That only reads as progression if the tiers
+  // are genuinely far apart, so HP spans 2..30 (a 15x spread) rather than the old
+  // 2..16 where the per-level HP multiplier flattened everything into "2-3 arrows"
+  // regardless of which type it was.
+  //
+  // Damage is tuned against a 100 HP player and armour that absorbs up to 49%:
+  // a grunt needs ~14 hits to kill you, a goliath ~3.
+  const ETYPES = {
+    grunt:   { hp:2, spd:1.05, dmg:7,  acd:1.2,  ar:1.05, sx:0.88, sy:0.92, col:0x334422 },
+    soldier: { hp:6, spd:1.45, dmg:13, acd:0.9,  ar:1.1,  sx:0.98, sy:1.02, col:0x4a1818 },
+    brute:   { hp:14,spd:0.75, dmg:22, acd:1.6,  ar:1.2,  sx:1.16, sy:1.08, col:0x1a1028 },
+    spectre: { hp:8, spd:1.95, dmg:15, acd:0.7,  ar:1.0,  sx:0.94, sy:1.05, col:0x303850 },
+    fiend:   { hp:18,spd:1.6,  dmg:20, acd:0.95, ar:1.15, sx:1.08, sy:1.0,  col:0x5a1010 },
+    goliath: { hp:30,spd:0.52, dmg:32, acd:1.85, ar:1.3,  sx:1.25, sy:1.18, col:0x0a0a14 },
+    miniboss:{ hp:16,spd:0.68, dmg:28, acd:1.95, ar:1.4,  sx:1.22, sy:1.2,  col:0x2a0a2a },
+    // Warlock — a robed caster that hurls fireballs from range (see the `ranged`
+    // branch in updateEnemies). Fragile up close; dangerous if left to line you up.
+    warlock: { hp:9, spd:0.95, dmg:14, acd:1.7,  ar:1.0,  sx:0.98, sy:1.06, col:0x3a1630, ranged:true },
+    // Hound — a fast, low-HP melee swarmer. Cheap individually, deadly in a pack.
+    hound:   { hp:3, spd:2.15, dmg:9,  acd:0.75, ar:1.0,  sx:1.06, sy:0.72, col:0x241612 },
+  };
+
+  // Bow tiers. A volley's rays each seek a *different* enemy (see the `killed`
+  // set in shoot()), so extra rays buy extra targets, never extra damage on one
+  // of them. Single-target power therefore lives entirely in ARROW_DMG, and it
+  // must rise every tier -- when it did not, picking up the tier-2 and tier-4
+  // bows actually halved your damage against brutes, goliaths and guardians.
+  // Arrow flight, and the hit range derived from it. These must stay tied
+  // together: the damage raycast in shoot() used to be built with no `far` at
+  // all (melee has always passed one), so the bow hit anything it could see --
+  // and `pendingDamage` scheduled the hit off the raw distance. Since an arrow
+  // only lives 1.35s at 22 u/s, any target past ~29.7 units died to an arrow
+  // that visibly expired in mid-air, on maps whose diagonal reaches 64.
+  const ARROW_SPEED = 22;
+  const ARROW_LIFE  = 1.35;
+  const BOW_RANGE   = ARROW_SPEED * ARROW_LIFE;
+  const ARROW_DMG = [2, 3, 5, 7, 10, 14, 19];
+  const SHOOT_CD  = [0.46, 0.40, 0.36, 0.32, 0.28, 0.25, 0.22];
+  const AMMO_PICKUP = 14;
+  const ARROW_RAYS = [
+    [{x:0,y:0}],
+    [{x:0,y:0}],
+    [{x:-0.07,y:0},{x:0,y:0},{x:0.07,y:0}],
+    [{x:-0.07,y:0},{x:0,y:0},{x:0.07,y:0}],
+    [{x:-0.10,y:0},{x:-0.05,y:0},{x:0,y:0},{x:0.05,y:0},{x:0.10,y:0},{x:-0.14,y:0},{x:0.14,y:0}],
+    [{x:-0.14,y:0},{x:-0.09,y:0.02},{x:-0.04,y:-0.01},{x:0,y:0},{x:0.04,y:0.01},{x:0.09,y:-0.02},{x:0.14,y:0}],
+    [{x:-0.18,y:0},{x:-0.13,y:0.02},{x:-0.08,y:-0.02},{x:-0.04,y:0.03},{x:0,y:0},{x:0.04,y:-0.03},{x:0.08,y:0.02},{x:0.13,y:-0.02},{x:0.18,y:0}],
+  ];
+  // The dagger stays a deliberate downgrade from the bow you are holding, but it
+  // has to track bow tier or it becomes literally unusable once mobs scale.
+  const meleeDamage = () => Math.max(1, Math.round(ARROW_DMG[Math.max(0,Math.min(player.gunTier,6))] * 0.55));
+
+  // The gear arc has to *finish inside the campaign*. It used to top out at level
+  // 19 (bow) and 20 (armour), which put the Storm Bow, Void Bow, Wyrmguard Plate
+  // and Abyssal Aegis past the end of the designed content -- four of the best
+  // rewards in the game were only reachable in the endless victory lap, and the
+  // campaign's own finale was fought at tier 4 of 6.
+  //
+  // Now the last bow lands on level 13 and the last armour on 14, so levels 13-15
+  // are played at full power against the nastiest roster. Tiers alternate bow /
+  // armour and never skip, so a single missed pickup costs one level of catch-up
+  // rather than stranding a tier (generateLevel only ever places one of each).
+  const UPGRADE_MILESTONES = [
+    { level: 2,  gunTier: 1, armorTier: 0 },
+    { level: 3,  gunTier: 1, armorTier: 1 },
+    { level: 4,  gunTier: 2, armorTier: 1 },
+    { level: 5,  gunTier: 2, armorTier: 2 },
+    { level: 7,  gunTier: 3, armorTier: 2 },
+    { level: 8,  gunTier: 3, armorTier: 3 },
+    { level: 9,  gunTier: 4, armorTier: 3 },
+    { level: 10, gunTier: 4, armorTier: 4 },
+    { level: 11, gunTier: 5, armorTier: 4 },
+    { level: 12, gunTier: 5, armorTier: 5 },
+    { level: 13, gunTier: 6, armorTier: 5 },
+    { level: 14, gunTier: 6, armorTier: 6 },
+  ];
+
+  // Levels 1-15 are the designed campaign; everything past that is an endless
+  // victory lap that keeps climbing at a gentler clip.
+  //
+  // Every function in this section takes the 0-based level index the rest of the
+  // engine passes around and converts to the 1-based level the player sees, so the
+  // numbers here line up with the roster intro levels and the milestone table.
+  const CORE_LEVELS = 15;
+  const coreLv   = level => Math.min(level+1, CORE_LEVELS);   // 1..15
+  const beyondLv = level => Math.max(0, (level+1) - CORE_LEVELS);
+
+  // ── Enemy budget ────────────────────────────────────────────────────────────
+  // ONE number owns how many enemies a level contains, so the population is a
+  // designed curve rather than the sum of three systems that each add their own.
+  const ENEMY_BUDGET_CAP = 40;
+  function getEnemyBudget(level) {
+    // 6 mobs on level 1 (a genuine tutorial), ~31 by level 15, then a slow crawl
+    // to the ceiling. The old curve opened at 10, which is a lot of bodies to
+    // handle with the 2-damage starter bow.
+    return Math.max(6, Math.min(
+      Math.round(4.5 + coreLv(level)*1.75 + beyondLv(level)*0.45), ENEMY_BUDGET_CAP));
+  }
+  // How the budget is divided. All three slices are proportions of the one budget
+  // -- previously the guards and the hard pass grew on their own schedules, so on
+  // level 1 they claimed 4 of the 6 mobs and left almost nothing roaming.
+  const budgetHallwayGuards = level => Math.max(1, Math.min(Math.round(getEnemyBudget(level)*0.18), 7));
+  const budgetHardPass      = level => Math.round(getEnemyBudget(level)*0.26);
+  const budgetRoaming       = level =>
+    Math.max(0, getEnemyBudget(level) - budgetHallwayGuards(level) - budgetHardPass(level) - 1 /* guardian */);
+
+  // ── Guardian HP ─────────────────────────────────────────────────────────────
+  // The guardian gates the level, so its difficulty is the one number that must
+  // never dip. Scaling its HP geometrically could not do that: player DPS jumps in
+  // discrete ~40% steps whenever a bow tier lands, so a smooth HP curve made every
+  // upgrade level's boss *easier* than the one before (arrows-to-kill used to run
+  // 11 -> 12 -> 18 -> 12 -> 21 -> 18 -> 25 -> 17, a saw with 8-arrow teeth).
+  //
+  // Instead we pick the target arrows-to-kill directly and solve for the HP that
+  // produces it, against the bow the progression *intends* you to hold. The result
+  // is monotonic by construction: 8 arrows on level 1 rising to 30 on level 15.
+  const bossTargetArrows = level => coreLv(level)*1.55 + 6.45 + beyondLv(level)*1.9;
+  function getBossHpMult(level) {
+    const tier = getProgressionTargets(level).gunTier;
+    return ARROW_DMG[Math.max(0,Math.min(tier,6))] * bossTargetArrows(level) / ETYPES.miniboss.hp;
+  }
+
+  function getDifficulty(level) {
+    const core=coreLv(level)-1, beyond=beyondLv(level);
+    return {
+      // Trash HP climbs gently because MOB_ROSTER already does the heavy lifting --
+      // the *mix* shifts from 2 HP grunts to 30 HP goliaths, which is a 15x swing on
+      // its own. The old 1.145 compounded on top of that and just pushed everything
+      // into the same 2-3 arrow bracket again.
+      hpMult:     Math.pow(1.070,core) * Math.pow(1.045,beyond),
+      bossHpMult: getBossHpMult(level),
+      // Capped, or hounds (2.15 base) eventually outrun the player's 3.2 and the
+      // endless run becomes unescapable rather than merely hard.
+      spdMult:    Math.min(1 + (core/(CORE_LEVELS-1))*0.28 + beyond*0.012, 1.42),
+      // Armour absorb reaches 49%, so incoming damage has to outgrow it. At 1.028
+      // it did not: post-armour hits actually got *softer* as you levelled
+      // (11 -> 13 -> 11 -> 13 -> 11 -> 10). Now they run 7 -> 20 across the core.
+      dmgMult:    Math.pow(1.052,core) * Math.pow(1.028,beyond),
+      extra:      budgetHardPass(level),
+      ammoBonus:  Math.max(2, Math.round(2 + (core/(CORE_LEVELS-1))*3)),
+    };
+  }
+
+  // Guardian identity is behaviour, not bulk. Every variant shares ETYPES.miniboss.hp
+  // as its base so getBossHpMult owns the entire HP curve -- a per-variant spread
+  // would reintroduce exactly the non-monotonicity that multiplier exists to kill
+  // (a 17 HP Reaper on level N+1 landing softer than a 22 HP Colossus on level N).
+  // Speed, attack cadence, reach and silhouette carry each one's character instead.
+  //
+  // Order matters: index 0 is the level-1 guardian and the list rotates by level.
+  // The Colossus sits at index 4 so it first appears on level 5 with a tier-2 bow
+  // in hand rather than on level 3 against the starter bow.
+  function getMinibossVariant(level) {
+    const hp=ETYPES.miniboss.hp;
+    const variants=[
+      {name:'The Warden',tint:0xc15dff,stats:{hp,spd:0.68,dmg:28,acd:1.95,ar:1.4,sx:1.22,sy:1.2}},
+      {name:'The Reaper',tint:0x65b7ff,stats:{hp,spd:0.92,dmg:24,acd:1.35,ar:1.5,sx:1.12,sy:1.28}},
+      {name:'The Hexer',tint:0x75e69b,stats:{hp,spd:0.62,dmg:26,acd:1.05,ar:1.35,sx:1.2,sy:1.24}},
+      {name:'The Dread Knight',tint:0xff4d70,stats:{hp,spd:0.76,dmg:33,acd:1.55,ar:1.55,sx:1.34,sy:1.3}},
+      {name:'The Colossus',tint:0xff7a32,stats:{hp,spd:0.42,dmg:36,acd:2.3,ar:1.55,sx:1.48,sy:1.38}},
+      {name:'The Necromancer',tint:0x8fffb0,stats:{hp,spd:0.66,dmg:25,acd:1.0,ar:1.4,sx:1.18,sy:1.26}},
+    ];
+    // Level 15 closes the campaign, so it gets a dedicated finale guardian instead
+    // of whatever the rotation happened to land on (it used to draw The Hexer).
+    if (level+1===CORE_LEVELS)
+      return {name:'The Dreadkeep Sovereign',tint:0xffd24a,
+              stats:{hp,spd:0.82,dmg:38,acd:1.5,ar:1.6,sx:1.52,sy:1.44}};
+    return variants[level%variants.length];
+  }
+
+  function getProgressionTargets(level) {
+    const visibleLevel = level + 1;
+    let gunTier = 0;
+    let armorTier = 0;
+    for (const milestone of UPGRADE_MILESTONES) {
+      if (visibleLevel >= milestone.level) {
+        gunTier = milestone.gunTier;
+        armorTier = milestone.armorTier;
+      }
+    }
+    return { gunTier, armorTier };
+  }
+
+  // ── Bestiary schedule ───────────────────────────────────────────────────────
+  // What you fight is the main difficulty curve, so it is driven by LEVEL.
+  //
+  // It used to be driven by `mapSlot` (= idx % 3) behind a MOB_MAP_CAPS table, and
+  // that produced a permanent three-level saw: slot 0 was capped at the grunt /
+  // soldier pool *forever*, so levels 1, 4, 7, 10, 13, 16, 19... never spawned
+  // anything else no matter how deep you were. Level 13 fought the same bestiary as
+  // level 1 while level 12 fielded fiends. On top of that the unlock tier was
+  // `min(4, floor(level/3))`, so the roster stopped growing entirely after level 12
+  // and goliaths did not appear until level 15 -- the last level of the campaign.
+  //
+  // Now each type has an introduction level and a weight curve. Types ramp in over
+  // a couple of levels, and the early trash *fades* so it is displaced rather than
+  // merely diluted -- grunts are 100% of the pool on level 1 and 3% by level 15.
+  //   intro: first level it can appear   full: level its weight peaks
+  //   fade:  level its weight starts decaying (0 = never)   peak: weight at full
+  const MOB_ROSTER = [
+    { type:'grunt',   intro:1,  full:1,  fade:4,  peak:10  },
+    { type:'soldier', intro:2,  full:3,  fade:9,  peak:8   },
+    { type:'hound',   intro:3,  full:4,  fade:11, peak:6   },
+    { type:'spectre', intro:5,  full:6,  fade:12, peak:6   },
+    { type:'brute',   intro:6,  full:8,  fade:0,  peak:5   },
+    { type:'warlock', intro:8,  full:9,  fade:0,  peak:3.5 },
+    { type:'fiend',   intro:10, full:12, fade:0,  peak:5   },
+    { type:'goliath', intro:12, full:14, fade:0,  peak:3.5 },
+  ];
+
+  // mapSlot is now pure flavour: it tilts the mix so the three atmospheres feel
+  // distinct, but it can no longer gate a type out of a level entirely.
+  //   0 garrison — disciplined ranks: soldiers and brutes
+  //   1 haunt    — fast and unnatural: hounds, spectres, warlocks
+  //   2 infernal — the heavy end: fiends, goliaths
+  const MOB_SLOT_BIAS = [
+    { soldier:1.5, brute:1.3, grunt:1.2, spectre:0.6, fiend:0.7 },
+    { spectre:1.6, hound:1.5, warlock:1.4, soldier:0.7 },
+    { fiend:1.6, goliath:1.5, warlock:1.3, brute:1.2, grunt:0.7 },
+  ];
+
+  // Returns [{type, w}] for the level. Past the campaign the schedule is already
+  // saturated, so the endless run keeps the level-15 mix and leans on the stat
+  // multipliers instead of inventing types it does not have.
+  function getMobWeights(level, mapSlot, preferHard=false) {
+    const lv = Math.min(level+1, CORE_LEVELS);
+    const bias = MOB_SLOT_BIAS[mapSlot] || MOB_SLOT_BIAS[2];
+    const table = [];
+    for (const r of MOB_ROSTER) {
+      if (lv < r.intro) continue;
+      const ramp  = Math.max(0, Math.min((lv-r.intro+1)/(r.full-r.intro+1), 1));
+      const decay = r.fade ? Math.max(0.15, Math.min(1-(lv-r.fade)/6, 1)) : 1;
+      let w = r.peak * ramp * decay * (bias[r.type] ?? 1);
+      // The hallway guards and the hard pass want the nastier end of whatever is
+      // currently available. Weighting by HP beats the old `filter out grunts`,
+      // which on levels 1-2 could empty the pool completely.
+      if (preferHard) w *= Math.pow(ETYPES[r.type].hp, 0.75) / 3;
+      if (w > 0.01) table.push({ type:r.type, w });
+    }
+    return table.length ? table : [{ type:'grunt', w:1 }];
+  }
+
+  function pickMobType(level, mapSlot, seed, preferHard=false) {
+    const table = getMobWeights(level, mapSlot, preferHard);
+    const total = table.reduce((s,e)=>s+e.w, 0);
+    const x = Math.sin(level*127.1 + mapSlot*61.7 + seed*311.7 + 1.5) * 43758.5453;
+    let roll = (x - Math.floor(x)) * total;
+    for (const e of table) { roll -= e.w; if (roll <= 0) return e.type; }
+    return table[table.length-1].type;
+  }
+
+  // Seeded shuffle (no Math.random so results are stable per level)
+  function sShuf(arr,seed) {
+    for(let i=arr.length-1;i>0;i--) {
+      const x=Math.sin(seed+i*127.1)*43758.5453;
+      const j=Math.abs(Math.floor((x-Math.floor(x))*i+0.0001))%i;
+      [arr[i],arr[j]]=[arr[j],arr[i]];
+    }
+    return arr;
+  }
+
+  // ── Level data ───────────────────────────────────────────────────────────────
+  // Map legend: 0=floor 1=wall 2=spawn 3=exit 4=unused 5=unused 6=key 7=gate
+  const LEVELS = [
+    {
+      name: 'The Outer Keep',
+      fogColor: 0x050810, fogDensity: 0.18,
+      ambCol: 0x3a4560, ambInt: 0.26,
+      fireplaces: [{ x:10, z:7 }],
+      // 20 cols x 16 rows — key at (3,13), gate at (10,14), exit at (18,14)
+      map: [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,2,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,0,1,1,1,1,0,1,1,0,1,1,1,1,0,1,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,0,0,1,0,0,0,1,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,0,1,1,1,0,1,1,0,1,1,1,0,1,1,1,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,1,1,1,0,1,1,1,1,0,1,0,1,1],
+        [1,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,7,0,0,0,0,0,0,0,3,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      ],
+      enemies: [
+        { x:8.5,  z:5.5,  type:'grunt'   },
+        { x:14.5, z:5.5,  type:'grunt'   },
+        { x:9.5,  z:8.5,  type:'soldier' },
+        { x:5.5,  z:11.5, type:'grunt'   },
+        { x:15.5, z:13.5, type:'soldier' },
+      ],
+      pickups: [
+        { x:17.5, z:3.5, type:'ammo'   },
+        { x:7.5,  z:7.5, type:'ammo'   },
+        { x:4.5,  z:10.5,type:'medkit' },
+      ],
+    },
+    {
+      name: 'The Catacombs',
+      fogColor: 0x020508, fogDensity: 0.22,
+      ambCol: 0x2a3050, ambInt: 0.2,
+      fireplaces: [{ x:11, z:9 }],
+      // 22 cols x 18 rows — key at (3,15), gate at (11,16), exit at (20,16)
+      map: [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,2,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+        [1,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,1],
+        [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,0,1],
+        [1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,1,1,0,1,1,0,1,1,0,1,1,1,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,0,1],
+        [1,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,7,0,0,0,0,0,0,0,0,3,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      ],
+      enemies: [
+        { x:5.5,  z:5.5,  type:'grunt'   },
+        { x:14.5, z:5.5,  type:'grunt'   },
+        { x:10.5, z:7.5,  type:'soldier' },
+        { x:4.5,  z:10.5, type:'grunt'   },
+        { x:16.5, z:10.5, type:'soldier' },
+        { x:9.5,  z:13.5, type:'grunt'   },
+        { x:18.5, z:13.5, type:'soldier' },
+        { x:7.5,  z:15.5, type:'soldier' },
+      ],
+      pickups: [
+        { x:19.5, z:1.5,  type:'ammo'   },
+        { x:11.5, z:5.5,  type:'medkit' },
+        { x:17.5, z:8.5,  type:'ammo'   },
+        { x:7.5,  z:12.5, type:'medkit' },
+      ],
+    },
+    {
+      name: 'Throne Vault',
+      fogColor: 0x080408, fogDensity: 0.16,
+      ambCol: 0x3a2040, ambInt: 0.18,
+      fireplaces: [{ x:13, z:11 }],
+      // 26 cols x 20 rows — key at (3,17), gate at (13,18), exit at (24,18)
+      map: [
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+        [1,2,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,1,0,1,0,0,0,1,0,1,0,0,0,1,0,1,0,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,0,1,1,0,1,1,1,0,1,1,1,0,1,1,0,1,1,1,0,1,1,0,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,0,0,1,0,0,0,1,0,1,0,0,0,1,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,1,0,1,0,1,1,0,1,0,1,1,0,1,0,1,1,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,0,1],
+        [1,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,7,0,0,0,0,0,0,0,0,0,0,3,1],
+        [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      ],
+      enemies: [
+        { x:6.5,  z:5.5,  type:'grunt'   },
+        { x:18.5, z:5.5,  type:'grunt'   },
+        { x:4.5,  z:7.5,  type:'soldier' },
+        { x:20.5, z:7.5,  type:'soldier' },
+        { x:8.5,  z:10.5, type:'soldier' },
+        { x:16.5, z:10.5, type:'grunt'   },
+        { x:12.5, z:12.5, type:'brute'   },
+        { x:9.5,  z:15.5, type:'brute'   },
+        { x:19.5, z:15.5, type:'soldier' },
+        { x:7.5,  z:17.5, type:'brute'   },
+        { x:16.5, z:17.5, type:'soldier' },
+        { x:21.5, z:17.5, type:'grunt'   },
+      ],
+      pickups: [
+        { x:10.5, z:3.5,  type:'ammo'   },
+        { x:20.5, z:3.5,  type:'ammo'   },
+        { x:12.5, z:8.5,  type:'medkit' },
+        { x:14.5, z:11.5, type:'ammo'   },
+        { x:6.5,  z:14.5, type:'medkit' },
+        { x:18.5, z:14.5, type:'ammo'   },
+      ],
+    },
+  ];
+
+  // ── Runtime state ────────────────────────────────────────────────────────────
+  let gameState    = 'start';
+  let gameActive   = false;
+  let pendingLock  = false;
+  let currentLevel = 0;
+  let currentMap   = [];
+  let corridorBands = [];
+  let worldW = 0, worldH = 0;
+  let currentMapKeys = [];
+  let currentRooms = [];
+  let advTimer = null;
+  let restartTimer = null;
+  let restartStepTimer = null;
+  let levelMinibossDefeated = false;
+  let levelMinibossVariant = null;
+  let torchAccum = 0;
+  let torchBudgetAccum = 0;
+  let atmosphereAccum = 0;
+  let lastVW = 0, lastVH = 0;
+
+  const player = {
+    x:1.5, z:1.5, yaw:0, pitch:0,
+    speed:3.2, radius:0.22,
+    health:100, ammo:30, maxAmmo:64,
+    hasKey:false, levelKills:0, campaignKills:0,
+    recoil:0, bobPhase:0, shootCd:0, meleeCd:0, weaponMode:2, moving:false, gunTier:0,
+    armorTier:0, upgrades:0,
+    y:0, vy:0, grounded:true,
+  };
+  const shake = { sT:0, sS:0, hT:0, hS:0 };
+  const move  = { fwd:false, bck:false, lft:false, rgt:false };
+
+  // Scene objects
+  const levelRoot  = new THREE.Group();
+  scene.add(levelRoot);
+  const enemies    = [];
+  const pickups    = [];
+  const torches    = [];
+  const fireLights = [];
+  const fixtureLights = [];
+  const transientLights = [];
+  const ceilingDrips = [];
+  const mossStrands = [];
+  const gates      = [];
+  const gibs       = [];
+  const arrows     = [];
+  const pendingDamage = [];
+  const enemySpells= [];
+  const decorColliders=[];
+  let levelExit    = { x:1.5, z:1.5, group:null, glow:null, seed:0 };
+  let bossExitRoom = null;
+  const arrowVisualCache = {};
+  let leaderboardEntries = [];
+  let pendingLeaderboardPayload = null;
+  let leaderboardLoaded = false;
+  const hudState={health:null,ammo:null,armorTier:null,gunTier:null,weaponMode:null,hasKey:null,level:null,kills:null};
+
+  const bowNames=['Shortbow','Longbow','Bone Bow','Shadow Bow','Hellfire Bow','Storm Bow','Void Bow'];
+  const bowShots=['single shot','heavier draw','triple shot','cursed volley','hellfire burst','storm volley','void barrage'];
+  const bowTierBadges=['I','II','III','IV','V','VI','VII'];
+  const armorNames=['No Armor','Leather Jerkin','Chain Mail','Runed Plate','Infernal Aegis','Wyrmguard Plate','Abyssal Aegis'];
+  const armorAbsorb=[0,0.12,0.2,0.28,0.36,0.43,0.49];
+
+  const ARMOR_NAMES=armorNames;
+  const ARMOR_ABSORB=armorAbsorb;
+  // ── Run checkpoints ─────────────────────────────────────────────────────────
+  // Nothing about a run was ever persisted, so dying on level 14 sent the player
+  // back to level 1 with no gear -- discarding the better part of an hour -- and
+  // quitting the app threw the run away entirely. A checkpoint is written on
+  // entering each level, holding the state the player arrived with.
+  //
+  // Restoring costs you the level you died on, not the whole campaign. Continues
+  // are counted and shown, so a continued run is never passed off as a clean one.
+  const RUN_KEY='sector93.run.v1';
+  function saveRun(){
+    try{
+      localStorage.setItem(RUN_KEY,JSON.stringify({
+        v:1, level:currentLevel,
+        gunTier:player.gunTier, armorTier:player.armorTier,
+        health:player.health, ammo:player.ammo,
+        campaignKills:player.campaignKills, upgrades:player.upgrades,
+        continues:runContinues,
+      }));
+    }catch(_){}
+  }
+  function loadRun(){
+    try{
+      const r=JSON.parse(localStorage.getItem(RUN_KEY)||'null');
+      if(!r||r.v!==1) return null;
+      // Validate before trusting it: this is user-writable storage, and a bad
+      // level index or tier would propagate straight into level generation and
+      // the weapon/armour lookup tables.
+      const int=(x,lo,hi,dflt)=>(typeof x==='number'&&isFinite(x)&&x>=lo&&x<=hi)?Math.floor(x):dflt;
+      return {
+        level:int(r.level,0,9999,0),
+        gunTier:int(r.gunTier,0,6,0), armorTier:int(r.armorTier,0,6,0),
+        health:int(r.health,1,100,100), ammo:int(r.ammo,0,player.maxAmmo,30),
+        campaignKills:int(r.campaignKills,0,1e7,0), upgrades:int(r.upgrades,0,999,0),
+        continues:int(r.continues,0,999,0),
+      };
+    }catch(_){ return null; }
+  }
+  function clearRun(){ try{ localStorage.removeItem(RUN_KEY); }catch(_){} }
+  let runContinues=0;
+
+  const LEADERBOARD_KEY='sector93.leaderboard.v1';
+  const LEADERBOARD_LIMIT=20;
+
+  function syncTierTrack(trackEl, tier) {
+    if (!trackEl) return;
+    const filled=Math.max(0, Math.min(tier, trackEl.children.length));
+    Array.from(trackEl.children).forEach((slot, index)=>{
+      slot.classList.toggle('on', index < filled);
+    });
+  }
+
+  // Lights
+  const GLOBAL_LIGHT_BOOST = 1.45;
+  const LIGHT_SOURCE_BOOST = 2.15;
+  const FLICKER_LIGHT_BOOST = 2.05;
+  const muzzleLight = new THREE.PointLight(0xffe8a0, 0, 2.4, 1.6);
+  muzzleLight.position.set(0, -0.05, -0.5);
+  camera.add(muzzleLight);
+
+  // The player carries a small hand torch: one dynamic light follows the camera,
+  // while the low-poly prop keeps the light source visually grounded in first person.
+  const torchRig=new THREE.Group();
+  torchRig.position.set(-0.38,-0.34,-0.54);
+  torchRig.scale.setScalar(0.78);
+  camera.add(torchRig);
+  const carriedTorchHandle=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035,0.045,0.38,6),
+    new THREE.MeshStandardMaterial({color:0x4b2815,roughness:0.9,metalness:0.02})
+  );
+  carriedTorchHandle.rotation.z=0;
+  carriedTorchHandle.position.set(0,-0.105,0);
+  torchRig.add(carriedTorchHandle);
+  const torchGrip=new THREE.Mesh(
+    new THREE.SphereGeometry(0.09,7,5),
+    new THREE.MeshStandardMaterial({color:0xd18b5b,roughness:0.82,metalness:0,emissive:0x1c0c06})
+  );
+  torchGrip.scale.set(0.7,0.92,0.62);
+  torchGrip.position.set(0,-0.10,0.085);
+  torchRig.add(torchGrip);
+  const torchCuff=new THREE.Mesh(
+    new THREE.TorusGeometry(0.072,0.014,5,8),
+    new THREE.MeshStandardMaterial({color:0x382117,roughness:0.92,metalness:0.02})
+  );
+  torchCuff.rotation.x=Math.PI/2;
+  torchCuff.position.set(0,-0.07,0.08);
+  torchRig.add(torchCuff);
+  const carriedTorchBand=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.06,0.066,0.05,6),
+    new THREE.MeshStandardMaterial({color:0x8a6330,roughness:0.55,metalness:0.55})
+  );
+  carriedTorchBand.position.set(0,0.075,0);
+  torchRig.add(carriedTorchBand);
+  const torchCup=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.075,0.058,0.07,8),
+    new THREE.MeshStandardMaterial({color:0x65421f,roughness:0.7,metalness:0.34})
+  );
+  torchCup.position.set(0,0.115,0);
+  torchRig.add(torchCup);
+  const torchRim=new THREE.Mesh(
+    new THREE.TorusGeometry(0.067,0.012,5,8),
+    new THREE.MeshStandardMaterial({color:0x9a7133,roughness:0.5,metalness:0.65})
+  );
+  torchRim.rotation.x=Math.PI/2;
+  torchRim.position.set(0,0.151,0);
+  torchRig.add(torchRim);
+  const outerFlameProfile=[
+    new THREE.Vector2(0.004,0),new THREE.Vector2(0.030,0.012),
+    new THREE.Vector2(0.043,0.045),new THREE.Vector2(0.030,0.082),
+    new THREE.Vector2(0.013,0.125),new THREE.Vector2(0,0.155)
+  ];
+  const carriedTorchFlame=new THREE.Mesh(
+    new THREE.LatheGeometry(outerFlameProfile,7),
+    new THREE.MeshBasicMaterial({color:0xdd6a1c,transparent:true,opacity:0.82,side:THREE.DoubleSide})
+  );
+  carriedTorchFlame.position.set(0,0.151,0);
+  torchRig.add(carriedTorchFlame);
+  const innerFlameProfile=[
+    new THREE.Vector2(0.003,0),new THREE.Vector2(0.017,0.012),
+    new THREE.Vector2(0.021,0.038),new THREE.Vector2(0.012,0.066),
+    new THREE.Vector2(0,0.095)
+  ];
+  const carriedTorchCore=new THREE.Mesh(
+    new THREE.LatheGeometry(innerFlameProfile,6),
+    // Held right against the camera, a near-white core blooms far harder than a
+    // world torch would. Warmer amber + lower opacity keeps it lit without blowing out.
+    new THREE.MeshBasicMaterial({color:0xffc266,transparent:true,opacity:0.86,side:THREE.DoubleSide})
+  );
+  carriedTorchCore.position.set(0,0.158,-0.008);
+  torchRig.add(carriedTorchCore);
+  const torchLickMaterial=new THREE.MeshBasicMaterial({color:0xf58a2a,transparent:true,opacity:0.68,side:THREE.DoubleSide});
+  const torchLickInnerMaterial=new THREE.MeshBasicMaterial({color:0xffc258,transparent:true,opacity:0.72,side:THREE.DoubleSide});
+  const carriedTorchLickA=new THREE.Mesh(new THREE.ConeGeometry(0.028,0.13,5),torchLickMaterial);
+  const carriedTorchLickB=new THREE.Mesh(new THREE.ConeGeometry(0.021,0.10,5),torchLickInnerMaterial);
+  carriedTorchLickA.position.set(-0.028,0.215,0.012);
+  carriedTorchLickB.position.set(0.026,0.204,-0.004);
+  carriedTorchLickA.rotation.z=-0.18;
+  carriedTorchLickB.rotation.z=0.22;
+  torchRig.add(carriedTorchLickA,carriedTorchLickB);
+  const torchLight=new THREE.PointLight(0xff9b4a,1.5*LIGHT_SOURCE_BOOST,8.5,1.5);
+  torchLight.position.set(0,0.215,0);
+  torchRig.add(torchLight);
+  const torchSpotLight=new THREE.SpotLight(0xffa04b,1.15*LIGHT_SOURCE_BOOST,10,1.02,0.96,1.15);
+  torchSpotLight.position.set(0,0.18,-0.02);
+  const torchSpotTarget=new THREE.Object3D();
+  torchSpotTarget.position.set(0,0.08,-7.5);
+  torchRig.add(torchSpotLight,torchSpotTarget);
+  torchSpotLight.target=torchSpotTarget;
+  const torchBaseIntensity=1.5*LIGHT_SOURCE_BOOST;
+  const torchSpotBaseIntensity=1.15*LIGHT_SOURCE_BOOST;
+
+  // ── Shared hand ─────────────────────────────────────────────────────────────
+  // One material and one builder for every weapon hand. These used to be
+  // copy-pasted per weapon and kept in sync by a comment, which is exactly the
+  // kind of coupling that silently rots — the two hands had already drifted
+  // apart in size, cant and thumb angle.
+  //
+  // makeFist() returns a fist wrapping a grip that runs along the group's local
+  // +Y. Callers orient the group to their own grip axis and scale it to the
+  // weapon.
+  //
+  // `side` is which way the back of the hand faces, and it matters more than it
+  // looks. Both rigs hang off +X while the camera sits at the origin, so the
+  // player only ever sees their -X flank. Building the palm outboard puts the
+  // fingertips pointing straight at the eye, which reads as a claw hooked under
+  // the weapon rather than a hand holding it. Default -1 keeps the back of the
+  // hand and the thumb toward the camera, with the fingers wrapping away around
+  // the far side — what you actually see holding something in your own hand.
+  //
+  // The fingers deliberately sink into the grip rather than clearing its front
+  // face; a hand that floats a hair off the thing it holds reads as detached at
+  // any distance, and nobody can see the intersection anyway.
+  const HAND_MAT=new THREE.MeshStandardMaterial({color:0xc98a5c,roughness:0.85,metalness:0,emissive:0x1a0b05});
+  function makeFist({reach=0.046,wrist=true,side=-1}={}){
+    const hand=new THREE.Group();
+    const palm=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.108,0.092),HAND_MAT);
+    palm.position.set(side*(reach+0.002),0,0.004); hand.add(palm);
+    // Longest at the index and tapering to the little finger, so the fist has
+    // some shape instead of reading as an evenly-milled block.
+    [{y:0.034,len:0.082,z:-0.040},
+     {y:0.011,len:0.086,z:-0.042},
+     {y:-0.012,len:0.082,z:-0.040},
+     {y:-0.035,len:0.072,z:-0.036}].forEach(f=>{
+      const finger=new THREE.Mesh(new THREE.BoxGeometry(f.len,0.019,0.026),HAND_MAT);
+      finger.position.set(side*(reach-f.len/2),f.y,f.z); hand.add(finger);
+      const tip=new THREE.Mesh(new THREE.BoxGeometry(0.024,0.019,0.026),HAND_MAT);
+      tip.position.set(side*(reach-f.len-0.010),f.y,f.z+0.022); hand.add(tip);
+      // Knuckle proud of the back of the hand. Without these the palm turns its
+      // one big flat face to the camera and reads as a card rather than a fist —
+      // worst on whichever weapon is held closest to the eye.
+      const knuckle=new THREE.Mesh(new THREE.BoxGeometry(0.015,0.017,0.022),HAND_MAT);
+      knuckle.position.set(side*(reach+0.019),f.y,f.z+0.030); hand.add(knuckle);
+    });
+    // Thumb lies over the top of the fingers rather than sticking out sideways.
+    const thumb=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.058,0.032),HAND_MAT);
+    thumb.rotation.set(-0.12,0,side*0.60);
+    thumb.position.set(side*(reach-0.020),0.044,-0.038); hand.add(thumb);
+    // Without a wrist the hand ends in a flat face and reads as detached. Weapons
+    // whose forearm runs along the grip axis opt out and supply their own.
+    if(wrist){
+      // Kept small and tucked in behind the fist. Sized up it catches the torch
+      // broadside and reads as a paddle stuck to the weapon, which pulls the eye
+      // harder than the missing wrist it is there to hide.
+      const forearm=new THREE.Mesh(new THREE.BoxGeometry(0.056,0.058,0.070),HAND_MAT);
+      forearm.rotation.x=0.34; forearm.position.set(side*(reach-0.018),-0.034,0.072);
+      hand.add(forearm);
+    }
+    return hand;
+  }
+
+  // ── Crossbow viewmodel ──────────────────────────────────────────────────────
+  // Held low-right and canted inward so the tiller runs toward the crosshair
+  // instead of lying flat across the screen. Deliberately small and pushed back:
+  // the dungeon is dark and cramped, and a bulky rig covers the exact part of
+  // the view you aim with. All seven tiers share this geometry and re-skin
+  // through applyBowTier() — tiering up should be legible in your hands, not
+  // just in the HUD.
+  const CROSSBOW_HOME={x:0.33,y:-0.30,z:-0.56};
+  const CROSSBOW_TILT={x:0.06,y:0.15,z:-0.05};
+  const crossbowRig=new THREE.Group();
+  crossbowRig.position.set(CROSSBOW_HOME.x,CROSSBOW_HOME.y,CROSSBOW_HOME.z);
+  crossbowRig.rotation.set(CROSSBOW_TILT.x,CROSSBOW_TILT.y,CROSSBOW_TILT.z);
+  crossbowRig.scale.setScalar(0.50);
+  camera.add(crossbowRig);
+
+  const bowStockMat  =new THREE.MeshStandardMaterial({color:0x6b4a2a,roughness:0.86,metalness:0.03});
+  const bowProdMat   =new THREE.MeshStandardMaterial({color:0x4e3418,roughness:0.72,metalness:0.10});
+  const bowMetalMat  =new THREE.MeshStandardMaterial({color:0x6e6459,roughness:0.44,metalness:0.76});
+  const bowCordMat   =new THREE.MeshStandardMaterial({color:0xbfae8c,roughness:0.95,metalness:0.0});
+  const bowLeatherMat=new THREE.MeshStandardMaterial({color:0x2c1a0e,roughness:0.93,metalness:0.0});
+  const bowAccentMat =new THREE.MeshStandardMaterial({color:0x33281c,roughness:0.45,metalness:0.55,emissive:0x000000});
+
+  // Tier skins. The palette stays inside the grounded-medieval range: the
+  // progression reads as better materials (ash → seasoned oak → bone → blackened
+  // steel), and only the top four tiers carry any emissive at all, kept dim so
+  // the crossbow never turns into a lamp that fights the torch.
+  const BOW_TIER_LOOKS=[
+    {stock:0x6b4a2a,prod:0x4e3418,metal:0x6e6459,cord:0xbfae8c,accent:0x33281c,glow:0x000000}, // Shortbow
+    {stock:0x53381f,prod:0x3a2712,metal:0x7d7264,cord:0xc7b894,accent:0x4a3a24,glow:0x000000}, // Longbow
+    {stock:0x6d6350,prod:0xa79c82,metal:0x8b8574,cord:0xd8cfb4,accent:0xb6ad93,glow:0x000000}, // Bone Bow
+    {stock:0x241d2a,prod:0x171320,metal:0x4b4458,cord:0x8a80a0,accent:0x6a4ea8,glow:0x2a1450}, // Shadow Bow
+    {stock:0x2a1a12,prod:0x1b100a,metal:0x6b4030,cord:0xc08050,accent:0xc4551c,glow:0x6e2004}, // Hellfire Bow
+    {stock:0x2f3a44,prod:0x1f2830,metal:0x9fb4c4,cord:0xcfe0ec,accent:0x5fa8d8,glow:0x164460}, // Storm Bow
+    {stock:0x1a1622,prod:0x100d18,metal:0x6f6488,cord:0xa898d8,accent:0x9a72ff,glow:0x3a1f9e}, // Void Bow
+  ];
+
+  // Stock: three blocks stepping down in section from butt to prod, so the
+  // silhouette tapers instead of reading as one slab.
+  const bowButt=new THREE.Mesh(new THREE.BoxGeometry(0.105,0.150,0.11),bowStockMat);
+  bowButt.position.set(0,-0.015,0.150); crossbowRig.add(bowButt);
+  const bowButtCap=new THREE.Mesh(new THREE.BoxGeometry(0.112,0.156,0.022),bowMetalMat);
+  bowButtCap.position.set(0,-0.015,0.207); crossbowRig.add(bowButtCap);
+  const bowStock=new THREE.Mesh(new THREE.BoxGeometry(0.095,0.108,0.30),bowStockMat);
+  bowStock.position.set(0,0.005,-0.055); crossbowRig.add(bowStock);
+  const bowTiller=new THREE.Mesh(new THREE.BoxGeometry(0.082,0.078,0.16),bowStockMat);
+  bowTiller.position.set(0,0.022,-0.275); crossbowRig.add(bowTiller);
+
+  // Bolt channel — two raised walls with a metal groove between them. This is
+  // the detail that makes the shape read as a crossbow at a glance.
+  const bowGroove=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.014,0.50),bowMetalMat);
+  bowGroove.position.set(0,0.070,-0.115); crossbowRig.add(bowGroove);
+  [-0.031,0.031].forEach(dx=>{
+    const wall=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.034,0.50),bowStockMat);
+    wall.position.set(dx,0.076,-0.115); crossbowRig.add(wall);
+  });
+
+  // Tier inlay runs down both flanks of the stock — hidden on the two plain
+  // wooden tiers, where an inlay would be a lie about what you are carrying.
+  const bowInlay=new THREE.Group();
+  [-0.050,0.050].forEach(dx=>{
+    const strip=new THREE.Mesh(new THREE.BoxGeometry(0.006,0.026,0.20),bowAccentMat);
+    strip.position.set(dx,0.006,-0.045); bowInlay.add(strip);
+  });
+  crossbowRig.add(bowInlay);
+
+  // Nut, trigger and guard.
+  const bowNut=new THREE.Mesh(new THREE.CylinderGeometry(0.036,0.036,0.072,8),bowMetalMat);
+  bowNut.rotation.z=Math.PI/2; bowNut.position.set(0,0.072,-0.020); crossbowRig.add(bowNut);
+  const bowTrigger=new THREE.Mesh(new THREE.BoxGeometry(0.018,0.085,0.026),bowMetalMat);
+  bowTrigger.rotation.x=0.30; bowTrigger.position.set(0,-0.078,-0.010); crossbowRig.add(bowTrigger);
+  const bowGuard=new THREE.Mesh(new THREE.TorusGeometry(0.058,0.009,4,10,Math.PI),bowMetalMat);
+  bowGuard.rotation.set(0,Math.PI/2,Math.PI); bowGuard.position.set(0,-0.052,-0.010);
+  crossbowRig.add(bowGuard);
+
+  // Leather grip, with the hand sharing its cant so the two cannot drift apart.
+  const bowGrip=new THREE.Mesh(new THREE.BoxGeometry(0.072,0.155,0.082),bowLeatherMat);
+  bowGrip.rotation.x=0.20; bowGrip.position.set(0,-0.115,0.098); crossbowRig.add(bowGrip);
+
+  // Vertical grip, so the canonical hand needs only the grip's own cant.
+  const bowHand=makeFist();
+  bowHand.rotation.x=0.20; bowHand.position.set(0,-0.100,0.096); crossbowRig.add(bowHand);
+
+  // Prod — swept back from the centre lath rather than a flat crossbar, with
+  // metal tip caps and a cord lashing where it seats into the tiller.
+  const bowProdCentre=new THREE.Mesh(new THREE.BoxGeometry(0.13,0.048,0.070),bowProdMat);
+  bowProdCentre.position.set(0,0.040,-0.360); crossbowRig.add(bowProdCentre);
+  const bowLashing=new THREE.Mesh(new THREE.BoxGeometry(0.098,0.062,0.026),bowLeatherMat);
+  bowLashing.position.set(0,0.040,-0.328); crossbowRig.add(bowLashing);
+  const BOW_LIMB_TIP=[];
+  [-1,1].forEach(side=>{
+    const limb=new THREE.Mesh(new THREE.BoxGeometry(0.26,0.040,0.056),bowProdMat);
+    limb.position.set(side*0.128,0.040,-0.350);
+    limb.rotation.y=-side*0.20;
+    limb.rotation.z=side*0.05;
+    crossbowRig.add(limb);
+    const tipX=side*0.252, tipZ=-0.324;
+    const cap=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.044,0.044),bowMetalMat);
+    cap.position.set(tipX,0.042,tipZ); crossbowRig.add(cap);
+    BOW_LIMB_TIP.push({x:tipX,z:tipZ});
+  });
+
+  // String: a V pinned at the nut, reaching each limb tip. Built as a group so
+  // release can throw the whole span forward and flatten it in one step.
+  const crossbowStringGroup=new THREE.Group();
+  crossbowStringGroup.position.set(0,0.072,-0.020); crossbowRig.add(crossbowStringGroup);
+  BOW_LIMB_TIP.forEach(tip=>{
+    const dx=tip.x, dz=tip.z+0.020;
+    const len=Math.hypot(dx,dz);
+    const half=new THREE.Mesh(new THREE.BoxGeometry(len,0.010,0.010),bowCordMat);
+    half.position.set(dx/2,0,dz/2);
+    half.rotation.y=Math.atan2(-dz,dx);
+    crossbowStringGroup.add(half);
+  });
+
+  // Loaded bolt sitting in the channel — vanishes the instant it is loosed.
+  const crossbowBolt=new THREE.Group();
+  crossbowBolt.position.set(0,0.088,0); crossbowRig.add(crossbowBolt);
+  const boltShaft=new THREE.Mesh(new THREE.CylinderGeometry(0.009,0.009,0.30,6),bowStockMat);
+  boltShaft.rotation.x=Math.PI/2; boltShaft.position.z=-0.175; crossbowBolt.add(boltShaft);
+  const boltHead=new THREE.Mesh(new THREE.ConeGeometry(0.014,0.048,4),bowMetalMat);
+  boltHead.rotation.x=-Math.PI/2; boltHead.position.z=-0.348; crossbowBolt.add(boltHead);
+  [0,Math.PI/2].forEach(rot=>{
+    const vane=new THREE.Mesh(new THREE.BoxGeometry(0.030,0.003,0.048),bowLeatherMat);
+    vane.rotation.z=rot; vane.position.z=-0.048; crossbowBolt.add(vane);
+  });
+
+  // Stirrup at the nose — the loop you brace with your boot to span the string.
+  const bowStirrup=new THREE.Mesh(new THREE.TorusGeometry(0.062,0.010,4,10,Math.PI),bowMetalMat);
+  bowStirrup.rotation.z=Math.PI; bowStirrup.position.set(0,0.030,-0.415);
+  crossbowRig.add(bowStirrup);
+
+  const crossbowMuzzle=new THREE.Object3D();
+  crossbowMuzzle.position.set(0,0.085,-0.44); crossbowRig.add(crossbowMuzzle);
+  crossbowRig.traverse(child=>{if(child.isMesh) child.frustumCulled=false;});
+  let crossbowKick=0;
+
+  function applyBowTier(tier){
+    const look=BOW_TIER_LOOKS[Math.max(0,Math.min(tier|0,BOW_TIER_LOOKS.length-1))];
+    bowStockMat.color.setHex(look.stock);
+    bowProdMat.color.setHex(look.prod);
+    bowMetalMat.color.setHex(look.metal);
+    bowCordMat.color.setHex(look.cord);
+    bowAccentMat.color.setHex(look.accent);
+    bowAccentMat.emissive.setHex(look.glow);
+    bowInlay.visible=tier>=2;
+  }
+  applyBowTier(0);
+
+  // ── Dagger viewmodel ────────────────────────────────────────────────────────
+  // Canted up and inward in the right hand so the point sits just off the
+  // crosshair. The blade is a four-sided taper rather than a box, which gives a
+  // real diamond section: a bright ridge down the centre and darker bevels
+  // either side, so it catches the torch instead of reading as a grey plank.
+  const MELEE_HOME={x:0.31,y:-0.31,z:-0.42};
+  const MELEE_TILT={x:0.10,y:0.22,z:-0.16};
+  const meleeRig=new THREE.Group();
+  meleeRig.position.set(MELEE_HOME.x,MELEE_HOME.y,MELEE_HOME.z);
+  meleeRig.rotation.set(MELEE_TILT.x,MELEE_TILT.y,MELEE_TILT.z);
+  meleeRig.scale.setScalar(0.92);
+  camera.add(meleeRig);
+  const daggerLeatherMat=new THREE.MeshStandardMaterial({color:0x3a2010,roughness:0.90,metalness:0.0});
+  const daggerWrapMat   =new THREE.MeshStandardMaterial({color:0x17100c,roughness:0.95,metalness:0.0});
+  const daggerSteelMat  =new THREE.MeshStandardMaterial({color:0x8d8577,roughness:0.42,metalness:0.80});
+  const daggerBrassMat  =new THREE.MeshStandardMaterial({color:0xa8823a,roughness:0.40,metalness:0.85});
+  const daggerBladeMat  =new THREE.MeshStandardMaterial({color:0xc9d2d8,roughness:0.20,metalness:0.92});
+
+  // Blade — a 4-gon cylinder scaled wide and thin. Points sit on ±X (the edges)
+  // and ±Z (the central ridge), so the taper and the section come for free.
+  const daggerBlade=new THREE.Mesh(new THREE.CylinderGeometry(0.011,0.030,0.30,4),daggerBladeMat);
+  daggerBlade.rotation.x=-Math.PI/2;
+  daggerBlade.scale.set(1.5,1,0.42);
+  daggerBlade.position.set(0,0,-0.205); meleeRig.add(daggerBlade);
+  const daggerPoint=new THREE.Mesh(new THREE.CylinderGeometry(0.0015,0.011,0.085,4),daggerBladeMat);
+  daggerPoint.rotation.x=-Math.PI/2;
+  daggerPoint.scale.set(1.5,1,0.42);
+  daggerPoint.position.set(0,0,-0.398); meleeRig.add(daggerPoint);
+  // Ricasso — the unsharpened stub where the blade meets the guard.
+  const daggerRicasso=new THREE.Mesh(new THREE.BoxGeometry(0.038,0.020,0.048),daggerSteelMat);
+  daggerRicasso.position.set(0,0,-0.038); meleeRig.add(daggerRicasso);
+
+  // Guard — a centre block with quillons raked forward toward the point.
+  const daggerGuardCentre=new THREE.Mesh(new THREE.BoxGeometry(0.052,0.034,0.036),daggerBrassMat);
+  daggerGuardCentre.position.set(0,0,-0.008); meleeRig.add(daggerGuardCentre);
+  [-1,1].forEach(side=>{
+    const quillon=new THREE.Mesh(new THREE.BoxGeometry(0.072,0.022,0.026),daggerBrassMat);
+    quillon.position.set(side*0.056,0,-0.020);
+    quillon.rotation.y=side*0.30;
+    meleeRig.add(quillon);
+    const finial=new THREE.Mesh(new THREE.OctahedronGeometry(0.019,0),daggerBrassMat);
+    finial.position.set(side*0.094,0,-0.031); meleeRig.add(finial);
+  });
+
+  // Grip — waisted leather over a core, bound with wire at both ends.
+  const daggerGrip=new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.023,0.145,8),daggerLeatherMat);
+  daggerGrip.rotation.x=Math.PI/2; daggerGrip.position.z=0.084; meleeRig.add(daggerGrip);
+  [0.026,0.048,0.122,0.142].forEach(dz=>{
+    const wrap=new THREE.Mesh(new THREE.TorusGeometry(0.027,0.0045,4,10),daggerWrapMat);
+    wrap.position.z=dz; meleeRig.add(wrap);
+  });
+  // Pommel — faceted, weighted, sized to balance the blade visually.
+  const daggerPommel=new THREE.Mesh(new THREE.CylinderGeometry(0.030,0.038,0.030,6),daggerBrassMat);
+  daggerPommel.rotation.x=Math.PI/2; daggerPommel.position.z=0.172; meleeRig.add(daggerPommel);
+  const daggerButton=new THREE.Mesh(new THREE.OctahedronGeometry(0.017,0),daggerBrassMat);
+  daggerButton.position.z=0.196; meleeRig.add(daggerButton);
+
+  // Hammer grip. This grip runs along Z rather than standing vertical like the
+  // crossbow's, so the canonical hand is rolled a quarter turn onto that axis:
+  // fingers end up curling under the grip and the thumb lies forward along it
+  // toward the guard. Scaled down to suit a grip thinner than the crossbow's —
+  // the same hand, sized to what it is holding.
+  const daggerHand=makeFist({wrist:false});
+  daggerHand.rotation.x=-Math.PI/2;
+  daggerHand.scale.setScalar(0.85);
+  daggerHand.position.set(0,-0.004,0.088); meleeRig.add(daggerHand);
+  // Forearm runs back along the grip axis past the pommel, where a real one
+  // would sit, rather than out the back of the knuckles.
+  // Kept narrower than the pommel so the pommel still reads proud of the wrist
+  // instead of being swallowed, and raked down toward the shoulder.
+  // Dimensions carry the hand's own 0.85 factor: this hangs off the rig rather
+  // than off the hand group, so it does not inherit that scale automatically and
+  // would otherwise sit a size too large on the end of its own wrist.
+  const daggerWrist=new THREE.Mesh(new THREE.BoxGeometry(0.053,0.056,0.081),HAND_MAT);
+  daggerWrist.rotation.x=0.18; daggerWrist.position.set(-0.006,-0.008,0.222);
+  meleeRig.add(daggerWrist);
+
+  meleeRig.traverse(child=>{if(child.isMesh) child.frustumCulled=false;});
+  meleeRig.visible=false;
+    let meleeSwing=0;
+
+    // ── Player body (visible FPS arms/torso reference) ──────────────────────────
+    const playerBody = new THREE.Group();
+    playerBody.position.set(0, -0.35, -0.3);
+    camera.add(playerBody);
+    playerBody.visible = false;
+
+    const torsoGeo = new THREE.BoxGeometry(0.4, 0.5, 0.2);
+    const torsoMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.8 });
+    const torso = new THREE.Mesh(torsoGeo, torsoMat);
+    playerBody.add(torso);
+
+    const armGeo = new THREE.BoxGeometry(0.08, 0.45, 0.08);
+  const armMat = new THREE.MeshStandardMaterial({ color: 0xd4a574, roughness: 0.7 });
+  const leftArm = new THREE.Mesh(armGeo, armMat);
+  leftArm.position.set(-0.22, -0.05, 0);
+  leftArm.rotation.z = 0.3;
+  playerBody.add(leftArm);
+    const rightArm = new THREE.Mesh(armGeo, armMat);
+  rightArm.position.set(0.22, -0.05, 0);
+  rightArm.rotation.z = -0.3;
+  playerBody.add(rightArm);
+  
+  // First-person rigs are a viewmodel, not part of the world: they draw on
+  // top of the scene (classic FPS style) instead of colliding with or clipping
+  // into walls. depthTest off + late renderOrder keeps them above world
+  // geometry; opaque parts still write depth so world transparencies behind
+  // them don't bleed through. renderOrder follows build order, so parts added
+  // later (flames, glows) layer over the prop bodies.
+  {
+    let heldOrder=1000;
+    for(const rig of [torchRig,crossbowRig,meleeRig]){
+      rig.traverse(o=>{
+        if(!o.isMesh) return;
+        o.renderOrder=heldOrder++;
+        for(const m of [].concat(o.material)){
+          m.depthTest=false;
+          if(m.transparent) m.depthWrite=false;
+        }
+      });
+    }
+  }
+
+  // The flat washes stay low on purpose: darkness should come from absence of
+  // light, and the torches/fireplaces below are strong enough to carve real
+  // pools. Raising these flattens the game back into uniform murk.
+  const ambient = new THREE.AmbientLight(0x4a5672, 0.22 * GLOBAL_LIGHT_BOOST);
+  scene.add(ambient);
+  const keyDir  = new THREE.DirectionalLight(0xa9c2ea, 0.18 * GLOBAL_LIGHT_BOOST);
+  keyDir.position.set(3, 5, 2);
+  scene.add(keyDir);
+
+  const clock = new THREE.Clock();
+  let fpsFrames = 0;
+  let fpsLastTime = performance.now();
+
+  // ── Texture helpers ──────────────────────────────────────────────────────────
+  function sr(seed) { const x = Math.sin(seed+1)*43758.5453; return x-Math.floor(x); }
+
+  function mkTex(canvas) {
+    const t = new THREE.CanvasTexture(canvas);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.magFilter = t.minFilter = THREE.NearestFilter;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    return t;
+  }
+
+  const wallTex = (() => {
+    const c = document.createElement('canvas'); c.width=128; c.height=128;
+    const ctx=c.getContext('2d');
+    // Deep mortar base
+    ctx.fillStyle='#1c1e22'; ctx.fillRect(0,0,128,128);
+    const bw=32, bh=16;
+    for (let row=0; row<8; row++) {
+      const off=(row%2)*bw*0.5;
+      const y=row*bh;
+      for (let col=-1; col<4; col++) {
+        const x=col*bw+off, seed=row*57+col*131+3;
+        const L=26+Math.floor(sr(seed)*16);          // per-block value
+        const H=26+Math.floor(sr(seed*3)*10);         // warm grey-brown hue
+        ctx.fillStyle=`hsl(${H},9%,${L}%)`;
+        ctx.fillRect(x+1,y+1,bw-2,bh-2);
+        // Raised bevel: light top/left, dark bottom/right
+        ctx.fillStyle='rgba(240,225,190,0.10)';
+        ctx.fillRect(x+1,y+1,bw-2,2); ctx.fillRect(x+1,y+1,2,bh-2);
+        ctx.fillStyle='rgba(0,0,0,0.40)';
+        ctx.fillRect(x+1,y+bh-3,bw-2,2); ctx.fillRect(x+bw-3,y+1,2,bh-2);
+        // Pitting / grain speckle (deterministic)
+        for (let i=0;i<6;i++) {
+          const s=seed*7+i*13;
+          ctx.fillStyle=`rgba(0,0,0,${(0.05+sr(s)*0.12).toFixed(3)})`;
+          ctx.fillRect(x+3+sr(s*3)*(bw-8), y+3+sr(s*5)*(bh-8), 1+sr(s*2)*3, 1+sr(s*4)*2);
+        }
+        // Occasional hairline crack
+        if (sr(seed*11)>0.72) {
+          ctx.strokeStyle='rgba(0,0,0,0.5)'; ctx.lineWidth=1;
+          ctx.beginPath();
+          let cx=x+4+sr(seed)*20, cy=y+2;
+          ctx.moveTo(cx,cy);
+          for(let k=0;k<3;k++){ cx+=(sr(seed*5+k)-0.5)*8; cy+=bh/3; ctx.lineTo(cx,cy); }
+          ctx.stroke();
+        }
+        // Sparse moss / lichen in shaded seams
+        if (sr(seed*17)>0.82) {
+          ctx.fillStyle=`rgba(70,90,45,${(0.14+sr(seed)*0.14).toFixed(3)})`;
+          ctx.fillRect(x+2, y+bh-4, 4+sr(seed*2)*10, 3);
+        }
+      }
+    }
+    return mkTex(c);
+  })();
+
+  const floorTex = (() => {
+    const c=document.createElement('canvas'); c.width=128; c.height=128;
+    const ctx=c.getContext('2d');
+    // Dark grout base
+    ctx.fillStyle='#0e0c0b'; ctx.fillRect(0,0,128,128);
+    const bw=16, bh=16;
+    for (let row=0; row<8; row++) for (let col=0; col<8; col++) {
+      const ox=(row%2===0)?0:bw*0.5;
+      const x=col*bw+ox, y=row*bh, s=col*31+row*97+1;
+      const L=13+Math.floor(sr(s)*10), H=24+Math.floor(sr(s*13)*14);
+      ctx.fillStyle=`hsl(${H},13%,${L}%)`;
+      const p=1.5;
+      ctx.fillRect(x+p, y+p, bw-2*p, bh-2*p);
+      // Worn bevel — subtle so it reads as flat-ish flagstone
+      ctx.fillStyle='rgba(230,215,180,0.06)';
+      ctx.fillRect(x+p, y+p, bw-2*p, 1.5);
+      ctx.fillStyle='rgba(0,0,0,0.35)';
+      ctx.fillRect(x+p, y+bh-p-1.5, bw-2*p, 1.5);
+      // Wear scuffs
+      for (let i=0;i<3;i++) {
+        const w=s*5+i*7;
+        ctx.fillStyle=`rgba(0,0,0,${(0.06+sr(w)*0.14).toFixed(3)})`;
+        ctx.fillRect(x+2+sr(w*3)*(bw-6), y+2+sr(w*5)*(bh-6), 1+sr(w)*4, 1+sr(w*2)*2);
+      }
+      // Cracks across some slabs
+      if (sr(s*11)>0.78) {
+        ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.lineWidth=1;
+        ctx.beginPath();
+        let cx=x+2, cy=y+3+sr(s)*8;
+        ctx.moveTo(cx,cy);
+        for(let k=0;k<3;k++){ cx+=bw/3; cy+=(sr(s*7+k)-0.5)*6; ctx.lineTo(cx,cy); }
+        ctx.stroke();
+      }
+      // Moss creeping from grout
+      if (sr(s*19)>0.85) {
+        ctx.fillStyle=`rgba(60,80,40,${(0.12+sr(s)*0.16).toFixed(3)})`;
+        ctx.fillRect(x+1, y+bh-3, bw-2, 2);
+      }
+    }
+    const t=mkTex(c); t.repeat.set(4,4); return t;
+  })();
+
+  const ceilTex = (() => {
+    const c=document.createElement('canvas'); c.width=128; c.height=128;
+    const ctx=c.getContext('2d');
+    // Near-black vault
+    ctx.fillStyle='#070506'; ctx.fillRect(0,0,128,128);
+    // Rough stone slabs between recessed beams
+    const bh=128/4;
+    for (let i=0;i<4;i++) {
+      const y=i*bh, s=i*41+2;
+      const L=6+Math.floor(sr(s)*5);
+      ctx.fillStyle=`hsl(22,12%,${L}%)`; ctx.fillRect(0, y+3, 128, bh-6);
+      // Plank/slab grain
+      for (let g=0; g<5; g++) {
+        ctx.fillStyle=`rgba(0,0,0,${(0.12+sr(s*3+g)*0.14).toFixed(3)})`;
+        ctx.fillRect(0, y+4+g*(bh/5), 128, 1);
+      }
+      // Recessed dark beam gaps with a faint top highlight
+      ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0, y, 128, 3);
+      ctx.fillStyle='rgba(120,100,70,0.06)'; ctx.fillRect(0, y+3, 128, 1);
+    }
+    // Cross joists
+    for (let j=0;j<3;j++){
+      const x=32+j*32;
+      ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(x-1,0,2,128);
+    }
+    // Soot staining
+    for (let i=0;i<14;i++) {
+      const s=i*23+5;
+      ctx.fillStyle=`rgba(0,0,0,${(0.18+sr(s)*0.22).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sr(s*3)*128, sr(s*5)*128, 2+sr(s)*7, 0, Math.PI*2);
+      ctx.fill();
+    }
+    const t=mkTex(c); t.repeat.set(6,6); return t;
+  })();
+
+  // Grayscale detail maps for decoration materials (multiply over the base colour)
+  const woodGrainTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#dcdcdc'; ctx.fillRect(0,0,64,64);
+    for (let x=0;x<64;x+=16){ ctx.fillStyle='rgba(0,0,0,0.16)'; ctx.fillRect(x,0,1,64); } // plank seams
+    for (let i=0;i<90;i++){                                   // grain streaks
+      const s=i*13+3, gx=sr(s)*64, gy=sr(s*3)*64, len=5+sr(s)*22;
+      ctx.strokeStyle=`rgba(70,50,32,${(0.08+sr(s*5)*0.12).toFixed(3)})`; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(gx+(sr(s*7)-0.5)*4, gy+len); ctx.stroke();
+    }
+    for (let i=0;i<4;i++){                                     // knots
+      const s=i*57+9;
+      ctx.strokeStyle='rgba(50,32,20,0.32)'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.ellipse(4+sr(s)*56, 4+sr(s*3)*56, 2+sr(s)*2, 3+sr(s)*3, 0,0,Math.PI*2); ctx.stroke();
+    }
+    return mkTex(c);
+  })();
+
+  const rugWeaveTex = (() => {
+    const c=document.createElement('canvas'); c.width=32; c.height=32;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#cfcfcf'; ctx.fillRect(0,0,32,32);
+    for (let y=0;y<32;y+=4) for (let x=0;x<32;x+=4){          // basket weave
+      const over=(((x>>2)+(y>>2))&1)===0;
+      ctx.fillStyle=over?'rgba(255,255,255,0.16)':'rgba(0,0,0,0.20)';
+      ctx.fillRect(x,y,4,4);
+    }
+    const t=mkTex(c); t.repeat.set(6,4); return t;
+  })();
+
+  const fabricTex = (() => {
+    const c=document.createElement('canvas'); c.width=32; c.height=48;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#cfcfcf'; ctx.fillRect(0,0,32,48);
+    for (let x=0;x<32;x+=2){ ctx.fillStyle=((x>>1)&1)?'rgba(0,0,0,0.12)':'rgba(255,255,255,0.08)'; ctx.fillRect(x,0,2,48); }
+    for (let y=0;y<48;y+=3){ ctx.fillStyle='rgba(0,0,0,0.07)'; ctx.fillRect(0,y,32,1); }
+    return mkTex(c);
+  })();
+
+  const glowTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    const g=ctx.createRadialGradient(32,32,1,32,32,32);
+    g.addColorStop(0,'rgba(255,255,255,0.95)');
+    g.addColorStop(0.16,'rgba(255,255,255,0.55)');
+    g.addColorStop(0.48,'rgba(255,255,255,0.15)');
+    g.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,64,64);
+    const t=new THREE.CanvasTexture(c);
+    t.colorSpace=THREE.SRGBColorSpace;
+    t.minFilter=t.magFilter=THREE.LinearFilter;
+    return t;
+  })();
+
+  const mossPatchTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d'); ctx.clearRect(0,0,64,64);
+    for(let i=0;i<52;i++) {
+      const s=i*37+11, x=3+sr(s)*58, y=sr(s*3)*46;
+      const r=2+sr(s*5)*7;
+      ctx.fillStyle=`rgba(${42+Math.floor(sr(s*7)*24)},${78+Math.floor(sr(s*11)*35)},${30+Math.floor(sr(s*13)*20)},${(0.38+sr(s*17)*0.5).toFixed(2)})`;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+      if(sr(s*19)>0.48) ctx.fillRect(x-1,y,r*0.45,10+sr(s*23)*25);
+    }
+    const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+    t.minFilter=t.magFilter=THREE.NearestFilter; return t;
+  })();
+
+  const wetStreakTex = (() => {
+    const c=document.createElement('canvas'); c.width=32; c.height=64;
+    const ctx=c.getContext('2d'); ctx.clearRect(0,0,32,64);
+    for(let i=0;i<9;i++) {
+      const s=i*29+5, x=sr(s)*31, w=1+Math.floor(sr(s*3)*3);
+      const g=ctx.createLinearGradient(0,0,0,64);
+      g.addColorStop(0,'rgba(150,205,200,0)');
+      g.addColorStop(0.18,`rgba(125,185,180,${(0.08+sr(s*7)*0.15).toFixed(2)})`);
+      g.addColorStop(1,'rgba(40,85,80,0.02)');
+      ctx.fillStyle=g; ctx.fillRect(x,0,w,45+sr(s*11)*19);
+    }
+    const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+    t.minFilter=t.magFilter=THREE.LinearFilter; return t;
+  })();
+
+  // Hearth stonework: irregular coursed ashlar with broken bond and chipped
+  // arrises, deliberately coarser than wallTex so a fireplace reads as dressed
+  // masonry set into the wall rather than more of the same wall. Greyscale, so
+  // the stone and trim materials tint the one canvas warm or cold. No soot is
+  // baked in -- staining that dark would band badly once the tile repeats up
+  // the chimney breast, so it lives on the firebox texture instead.
+  const hearthStoneTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#3f3d3a'; ctx.fillRect(0,0,64,64);            // mortar bed
+    const bh=16;
+    for (let row=0;row<4;row++) {
+      const y=row*bh, off=(row%2)*12;
+      for (let col=-1;col<4;col++) {
+        const s=row*61+col*127+7;
+        const bw=18+Math.floor(sr(s)*10);                        // uneven courses
+        const x=col*24+off;
+        const L=126+Math.floor(sr(s*3)*58);
+        ctx.fillStyle=`rgb(${L},${L},${L})`;
+        ctx.fillRect(x+1,y+1,bw-2,bh-2);
+        ctx.fillStyle='rgba(255,255,255,0.14)';                  // lit top arris
+        ctx.fillRect(x+1,y+1,bw-2,2);
+        ctx.fillStyle='rgba(0,0,0,0.44)';                        // shaded underside
+        ctx.fillRect(x+1,y+bh-3,bw-2,2); ctx.fillRect(x+bw-3,y+1,2,bh-2);
+        for (let i=0;i<7;i++) {                                  // tooling pits
+          const p=s*7+i*17;
+          ctx.fillStyle=`rgba(0,0,0,${(0.06+sr(p)*0.17).toFixed(3)})`;
+          ctx.fillRect(x+2+sr(p*3)*(bw-6), y+2+sr(p*5)*(bh-6), 1+sr(p*2)*3, 1+sr(p*4)*2);
+        }
+        if (sr(s*13)>0.70) {                                     // chipped corner
+          ctx.fillStyle='rgba(0,0,0,0.36)';
+          ctx.fillRect(x+bw-6,y+1,4,3);
+        }
+      }
+    }
+    return mkTex(c);
+  })();
+  const hearthTrimTex = (() => { const t=hearthStoneTex.clone(); t.needsUpdate=true; t.repeat.set(3,1); return t; })();
+
+  // Firebox lining: fire-cracked stone buried under soot, with ash bloom and a
+  // few surviving hot flecks. Used on the back plate and the jambs, which is
+  // what sells the fireplace as something that has actually been burning.
+  const hearthSootTex = (() => {
+    const c=document.createElement('canvas'); c.width=64; c.height=64;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#241f1b'; ctx.fillRect(0,0,64,64);
+    for (let i=0;i<26;i++) {                                     // scorched mottling
+      const s=i*31+13, x=sr(s)*64, y=sr(s*3)*64, r=3+sr(s*5)*9;
+      const v=Math.floor(18+sr(s*7)*46);
+      ctx.fillStyle=`rgba(${v},${Math.floor(v*0.88)},${Math.floor(v*0.78)},0.55)`;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    for (let i=0;i<11;i++) {                                     // heat cracks
+      const s=i*47+5;
+      ctx.strokeStyle=`rgba(0,0,0,${(0.45+sr(s)*0.35).toFixed(2)})`; ctx.lineWidth=1;
+      ctx.beginPath();
+      let cx=sr(s)*64, cy=sr(s*3)*64;
+      ctx.moveTo(cx,cy);
+      for (let k=0;k<4;k++) { cx+=(sr(s*5+k)-0.5)*18; cy+=(sr(s*7+k)-0.5)*18; ctx.lineTo(cx,cy); }
+      ctx.stroke();
+    }
+    for (let i=0;i<40;i++) {                                     // ash bloom
+      const s=i*23+3;
+      ctx.fillStyle=`rgba(196,188,176,${(0.05+sr(s*11)*0.13).toFixed(3)})`;
+      ctx.fillRect(sr(s)*64, sr(s*3)*64, 1+sr(s*5)*2, 1+sr(s*7)*2);
+    }
+    for (let i=0;i<7;i++) {                                      // surviving embers
+      const s=i*67+21;
+      ctx.fillStyle=`rgba(${190+Math.floor(sr(s)*60)},${70+Math.floor(sr(s*3)*50)},24,${(0.30+sr(s*5)*0.34).toFixed(2)})`;
+      ctx.fillRect(sr(s*7)*62, 34+sr(s*11)*28, 1+sr(s*13)*2, 1+sr(s*17)*2);
+    }
+    return mkTex(c);
+  })();
+
+  // Shared textures that persist across levels and must never be disposed on level clear.
+  const PERSISTENT_MAPS = new Set([wallTex, floorTex, ceilTex, woodGrainTex, rugWeaveTex, fabricTex, glowTex, mossPatchTex, wetStreakTex, hearthStoneTex, hearthTrimTex, hearthSootTex]);
+
+  const wallMat = new THREE.MeshStandardMaterial({map:wallTex,color:0xb8c2b5,roughness:0.72,metalness:0.11,side:THREE.DoubleSide});
+  const PERSISTENT_MATERIALS = new Set([wallMat]);
+
+  function addGlowSprite(parent,color,scale,x=0,y=0,z=0,opacity=0.3) {
+    const material=new THREE.SpriteMaterial({
+      map:glowTex,
+      color,
+      transparent:true,
+      opacity,
+      blending:THREE.AdditiveBlending,
+      depthWrite:false,
+      depthTest:true,
+    });
+    const sprite=new THREE.Sprite(material);
+    sprite.position.set(x,y,z);
+    sprite.scale.set(scale,scale,1);
+    sprite.renderOrder=2;
+    parent.add(sprite);
+    return sprite;
+  }
+
+  // Enemy texture cache — animated: two walk frames per living mob.
+  // Rendered at 2× the original pixel-art resolution (128×168 backing a 64×84
+  // drawing space via ctx.scale) plus a soft shading pass, then smoothly filtered,
+  // so the mobs read as painted rather than blocky.
+  const ENEMY_TEX_SCALE = 2;
+  const ETW = 64, ETH = 84;           // logical (drawing) dimensions
+  const eTexCache = {};
+  function finishEnemyTex(canvas){
+    const t=new THREE.CanvasTexture(canvas);
+    t.colorSpace=THREE.SRGBColorSpace;
+    t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping;
+    // Bilinear, but NO mipmaps: these feed an alpha-tested billboard, and mipmapped
+    // alpha averages below the alphaTest threshold at distance, which makes sprites
+    // thin out or fade as they recede. Bilinear-only keeps them crisp at every range.
+    t.magFilter=THREE.LinearFilter;
+    t.minFilter=THREE.LinearFilter;
+    t.generateMipmaps=false;
+    t.needsUpdate=true;
+    return t;
+  }
+  function mkEnemyTex(type, dead, frame=0) {
+    const key=type+(dead?'_d':'_a'+(frame&1));
+    if (eTexCache[key]) return eTexCache[key];
+    const c=document.createElement('canvas'); c.width=ETW*ENEMY_TEX_SCALE; c.height=ETH*ENEMY_TEX_SCALE;
+    const ctx=c.getContext('2d'); ctx.scale(ENEMY_TEX_SCALE,ENEMY_TEX_SCALE); ctx.clearRect(0,0,ETW,ETH);
+
+    // Small pixel-art helpers
+    const rect=(x,y,w,h,col)=>{ ctx.fillStyle=col; ctx.fillRect(x,y,w,h); };
+    const tri=(pts,col)=>{ ctx.fillStyle=col; ctx.beginPath(); ctx.moveTo(pts[0],pts[1]); for(let i=2;i<pts.length;i+=2) ctx.lineTo(pts[i],pts[i+1]); ctx.closePath(); ctx.fill(); };
+    const eye=(x,y,w,h,glow,core)=>{ ctx.fillStyle=glow; ctx.fillRect(x,y,w,h); ctx.fillStyle=core; ctx.fillRect(x+1,y+1,Math.max(1,w-2),Math.max(1,h-2)); };
+
+    if (dead) {
+      const remains={
+        grunt:['#18200f','#496b26'], soldier:['#260707','#861818'], brute:['#160b20','#542574'],
+        warlock:['#180a20','#ff8a2a'], hound:['#140d0a','#7a2a18'],
+        spectre:['rgba(20,35,70,0.7)','rgba(90,145,220,0.75)'], fiend:['#210303','#85130b'],
+        goliath:['#292721','#ff6418'], miniboss:['#180522','#7e2fb0'],
+      }[type]||['#1a0a0a','#600000'];
+      ctx.fillStyle=remains[0];
+      ctx.beginPath(); ctx.ellipse(32,72,22,8,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=remains[1];
+      ctx.beginPath(); ctx.ellipse(32,67,14,5,0,0,Math.PI*2); ctx.fill();
+      rect(14,64,7,4,remains[1]); rect(44,70,9,3,remains[1]);
+      const t=finishEnemyTex(c); PERSISTENT_MAPS.add(t); eTexCache[key]=t; return t;
+    }
+
+    const f = frame & 1;      // 0 / 1 walk frame
+
+    if (type==='grunt') {
+      // Rotting green ghoul — small, hunched, shuffling legs
+      rect(21,60,9, f?16:20, '#243d16');            // left leg (steps)
+      rect(34,60,9, f?20:16, '#243d16');            // right leg
+      rect(20,34,24,30,'#33521f');                  // torso
+      rect(20,34,24,6,'#213812');                   // shoulder shade
+      ctx.fillStyle='#3f6428'; for(let i=0;i<3;i++) ctx.fillRect(22,40+i*6,20,2); // ribs
+      rect(11,36+(f?5:0),9,22,'#2b481a');           // left arm swings
+      rect(44,36+(f?0:5),9,22,'#2b481a');           // right arm swings
+      ctx.fillStyle='#8fae52'; ctx.fillRect(11,56+(f?5:0),9,4); ctx.fillRect(44,56+(f?0:5),9,4); // claws
+      rect(22,16,20,20,'#456b2c');                  // head
+      rect(22,16,20,5,'#243d16');                   // brow
+      eye(25,22,6,6,'#e0c000','#fff6a0'); eye(35,22,6,6,'#e0c000','#fff6a0');
+      ctx.fillStyle='#c7d89a'; for(let i=0;i<4;i++) ctx.fillRect(24+i*4,33,3,3); // teeth
+      tri([20,61,24,70,28,62,32,72,36,62,41,69,44,61],'#294619'); // ragged tunic
+      rect(24,43,3,9,'#75904a'); rect(37,48,2,7,'#1d3012'); // rot and scars
+    } else if (type==='soldier') {
+      // Crimson armored knight — upright, shield + swinging sword
+      rect(18,60,11, f?18:22, '#4a1414');           // left greave
+      rect(35,60,11, f?22:18, '#4a1414');           // right greave
+      rect(14,26,36,36,'#7a1e1e');                  // chest plate
+      rect(14,26,36,8,'#5a1414');
+      tri([32,34, 39,44, 32,54, 25,44], '#c94b3a'); // chest emblem
+      rect(9,28,9,15,'#8a2a2a'); rect(46,28,9,15,'#8a2a2a'); // pauldrons
+      rect(20,6,24,22,'#661818');                   // helmet
+      rect(20,6,24,6,'#3d0e0e');
+      tri([32,0, 28,6, 36,6], '#c94b3a');           // crest
+      ctx.fillStyle='#ff2a1a'; ctx.fillRect(23,15,18,4); ctx.fillStyle='#ff9070'; ctx.fillRect(25,16,14,1); // visor slit
+      tri([8,31, 18,35, 17,57, 8,64, 3,55, 3,38], '#491010'); // tower shield
+      rect(7,38,7,18,'#8d2924'); rect(9,43,3,8,'#d06343');
+      rect(48,30,7,20+(f?6:0),'#8a2a2a');           // sword arm
+      rect(50, f?4:12, 4, 26, '#cfd6dd');           // blade raises
+      rect(51, f?5:13, 2, 24, '#9098a0');
+    } else if (type==='brute') {
+      // Purple demon tank — huge shoulders, horns, tiny legs, swinging fists
+      rect(18,66,12, f?14:18, '#0e0818'); rect(34,66,12, f?18:14, '#0e0818'); // stubby legs
+      rect(6,26,52,42,'#241338');                   // massive torso
+      rect(6,26,52,10,'#160a24');
+      rect(2,30+(f?5:0),12,34,'#1c1030');           // left arm slab
+      rect(50,30+(f?0:5),12,34,'#1c1030');          // right arm slab
+      ctx.fillStyle='#cfc0e6'; ctx.fillRect(2,60+(f?5:0),12,4); ctx.fillRect(50,60+(f?0:5),12,4); // knuckles
+      rect(20,10,24,20,'#180d28');                  // sunken head
+      tri([20,12, 12,0, 24,10], '#3a2456'); tri([44,12, 52,0, 40,10], '#3a2456'); // horns
+      eye(22,16,7,6,'#ff7a10','#ffc060'); eye(29,15,7,6,'#ff7a10','#ffc060'); eye(37,16,7,6,'#ff7a10','#ffc060');
+      tri([5,39,0,34,6,47], '#6c4a80'); tri([59,39,64,34,58,47], '#6c4a80');
+      rect(20,43,24,3,'#4c2868'); rect(28,48,3,12,'#8a416d'); // scarred chest
+    } else if (type==='spectre') {
+      // Blue wraith — floating hooded shade, waving tail, no legs
+      const g=ctx.createLinearGradient(0,44,0,84);
+      g.addColorStop(0,'rgba(90,120,180,0.85)'); g.addColorStop(1,'rgba(90,120,180,0)');
+      ctx.fillStyle=g; ctx.beginPath();
+      ctx.moveTo(20,46); ctx.quadraticCurveTo(12+(f?10:0),66, 26,82);
+      ctx.lineTo(38,82); ctx.quadraticCurveTo(52-(f?10:0),66, 44,46); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='rgba(120,150,210,0.92)'; ctx.beginPath(); ctx.ellipse(32,34,16,22,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='rgba(80,105,160,0.95)'; ctx.beginPath(); ctx.moveTo(18,30); ctx.quadraticCurveTo(32,2,46,30); ctx.closePath(); ctx.fill(); // hood
+      eye(24,20,7,8,'#d8ecff','#ffffff'); eye(34,20,7,8,'#d8ecff','#ffffff');
+      ctx.fillStyle='rgba(110,140,200,0.8)'; ctx.fillRect(6,30+(f?6:0),14,8); ctx.fillRect(44,30+(f?0:6),14,8); // reaching arms
+      ctx.fillStyle='rgba(180,220,255,0.42)';
+      ctx.fillRect(f?12:7,61,3,9); ctx.fillRect(f?48:53,68,3,8); ctx.fillRect(f?25:38,74,2,7); // trailing wisps
+    } else if (type==='fiend') {
+      // Red bat-demon — wings flap dramatically between frames
+      if (f) {                                       // wings up
+        tri([20,32, 2,10, 8,34, 22,40], '#5a0c0c');
+        tri([44,32, 62,10, 56,34, 42,40], '#5a0c0c');
+      } else {                                        // wings spread down
+        tri([20,36, 0,42, 10,52, 24,44], '#5a0c0c');
+        tri([44,36, 64,42, 54,52, 40,44], '#5a0c0c');
+      }
+      rect(24,30,16,26,'#3a0808');                   // body
+      rect(24,14,16,16,'#2a0606');                   // head
+      tri([26,14, 22,6, 30,14], '#3a0808'); tri([38,14, 42,6, 34,14], '#3a0808'); // horns
+      ctx.fillStyle='#ff2a10'; ctx.fillRect(26,19,5,3); ctx.fillRect(33,19,5,3);
+      ctx.fillStyle='#e8e8e8'; ctx.fillRect(27,28,3,4); ctx.fillRect(34,28,3,4); // fangs
+      rect(30,54,4,14,'#3a0808'); tri([28,68, 36,68, 32,80], '#5a1010'); // barbed tail
+      ctx.strokeStyle='#a52a20'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(20,34); ctx.lineTo(f?7:5,f?15:43); ctx.moveTo(44,34); ctx.lineTo(f?57:59,f?15:43); ctx.stroke(); // wing veins
+    } else if (type==='goliath') {
+      // Stone golem — blocky, glowing lava cracks, heavy step
+      rect(14,64,16, f?16:20, '#2a2620'); rect(34,64,16, f?20:16, '#2a2620'); // legs step
+      ctx.fillStyle='#ff7a1a'; ctx.fillRect(21,66,2, f?12:16);
+      rect(8,22,48,44,'#3a352c');                    // torso block
+      rect(8,22,48,8,'#4a453a');
+      ctx.strokeStyle='#ff7a1a'; ctx.lineWidth=2;     // lava cracks
+      ctx.beginPath(); ctx.moveTo(20,30); ctx.lineTo(28,44); ctx.lineTo(22,58); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(44,28); ctx.lineTo(38,42); ctx.lineTo(46,56); ctx.stroke();
+      rect(0,26+(f?5:0),12,38,'#33302a'); rect(52,26+(f?0:5),12,38,'#33302a'); // arms
+      rect(20,6,24,16,'#33302a');                     // head block
+      eye(24,10,7,6,'#ff8a1a','#ffd080'); eye(34,10,7,6,'#ff8a1a','#ffd080');
+      rect(12,32,8,5,'#625e4c'); rect(42,48,10,4,'#201e1b');
+      rect(10,24,4,5,'#60734a'); rect(47,58,5,3,'#60734a'); // moss on ancient stone
+    } else if (type==='miniboss') {
+      // Violet overlord — crown, flowing cloak, glowing staff
+      ctx.fillStyle='#1a0a2a'; ctx.beginPath();       // cloak sways
+      ctx.moveTo(14,40); ctx.lineTo(8+(f?4:0),82); ctx.lineTo(56-(f?4:0),82); ctx.lineTo(50,40); ctx.closePath(); ctx.fill();
+      rect(18,28,28,44,'#2a1044');                    // robe
+      ctx.fillStyle='rgba(200,80,255,0.55)'; ctx.beginPath(); ctx.ellipse(32,46,6,8,0,0,Math.PI*2); ctx.fill(); // gem
+      rect(10,30,8,30,'#22103a'); rect(46,30,8,30,'#22103a'); // arms
+      rect(20,10,24,18,'#1a0a2a');                    // head
+      for(let i=0;i<5;i++) tri([18+i*7,10, 21+i*7,2, 24+i*7,10], '#7a3ad0'); // crown
+      eye(23,16,6,6,'#ff3a80','#ffb0c8'); eye(31,15,6,6,'#ff3a80','#ffb0c8'); eye(39,16,6,6,'#ff3a80','#ffb0c8');
+      rect(53, f?6:10, 3, 54, '#4a3a20');             // staff bobs
+      ctx.fillStyle='#c060ff'; ctx.beginPath(); ctx.ellipse(54, f?6:10, 6,7,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#e8b0ff'; ctx.beginPath(); ctx.ellipse(54, f?6:10, 3,3,0,0,Math.PI*2); ctx.fill();
+      rect(20,62,24,3,'#8e45bd');
+      for(let i=0;i<4;i++) tri([18+i*9,72,22+i*9,80,26+i*9,72],'#4b1767'); // robe tassels
+      ctx.fillStyle='#ffd6ff'; ctx.fillRect(31,4,3,3); // crown jewel
+    } else if (type==='warlock') {
+      // Hooded fire-caster — dark robe, sunken glowing eyes, and a fireball orb
+      // that pulses in its raised hands between frames.
+      ctx.fillStyle='#1e1226'; ctx.beginPath();          // robe hem sways
+      ctx.moveTo(16,42); ctx.lineTo(10+(f?4:0),82); ctx.lineTo(54-(f?4:0),82); ctx.lineTo(48,42); ctx.closePath(); ctx.fill();
+      rect(20,30,24,42,'#2b1834');                        // robe body
+      rect(20,30,24,7,'#1b0f22');                          // shoulder shade
+      ctx.fillStyle='#160b1c'; ctx.beginPath(); ctx.moveTo(20,32); ctx.quadraticCurveTo(32,6,44,32); ctx.closePath(); ctx.fill(); // hood
+      rect(24,18,16,16,'#0e0714');                         // face shadow
+      eye(26,22,6,6,'#ff8a1a','#ffe0a0'); eye(34,22,6,6,'#ff8a1a','#ffe0a0'); // glowing eyes
+      rect(12,38+(f?3:0),9,18,'#241430'); rect(43,38+(f?0:3),9,18,'#241430'); // sleeves reach
+      ctx.fillStyle='#3a2448'; ctx.fillRect(12,54+(f?3:0),9,4); ctx.fillRect(43,54+(f?0:3),9,4); // hands
+      const oy=44+(f?-3:3);                                // conjured orb bobs
+      ctx.fillStyle='rgba(255,150,40,0.5)'; ctx.beginPath(); ctx.ellipse(32,oy,10,10,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ff7a1a'; ctx.beginPath(); ctx.ellipse(32,oy,6,6,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ffe08a'; ctx.beginPath(); ctx.ellipse(32,oy,3,3,0,0,Math.PI*2); ctx.fill();
+      rect(20,60,24,3,'#5a3a20');                          // sash
+      for(let i=0;i<4;i++) tri([18+i*9,72,22+i*9,80,26+i*9,72],'#1b0f22'); // tassels
+    } else if (type==='hound') {
+      // Demonic hound in profile — low, wide, galloping. Legs alternate per frame.
+      rect(18,64,7, f?16:12,'#181010');                    // hind leg
+      rect(24,64,6, f?12:16,'#150d0d');                    // second leg (offset)
+      rect(34,64,7, f?12:16,'#181010');                    // third leg
+      rect(43,64,7, f?16:12,'#181010');                    // fore leg
+      ctx.fillStyle='#241612'; ctx.beginPath(); ctx.ellipse(32,48,22,14,0,0,Math.PI*2); ctx.fill(); // body
+      rect(10,44,11,11,'#1c1310');                          // haunch
+      for(let i=0;i<5;i++) tri([18+i*7,36, 21+i*7,26, 24+i*7,36], '#3a1c14'); // back spikes
+      ctx.fillStyle='#2a1712'; ctx.beginPath(); ctx.ellipse(50,45,12,11,0,0,Math.PI*2); ctx.fill(); // head
+      tri([43,35, 47,25, 51,35], '#3a1c14'); tri([51,35, 55,25, 58,37], '#3a1c14'); // ears
+      eye(45,41,6,5,'#ff3a12','#ffb060');                  // glowing eye
+      rect(52,49,11,5,'#0e0808');                           // maw
+      ctx.fillStyle='#e8dcc8'; ctx.fillRect(54,49,2,4); ctx.fillRect(59,49,2,4); // fangs
+      ctx.strokeStyle='#241612'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(12,44); ctx.lineTo(f?4:6, f?34:38); ctx.stroke(); // tail
+    }
+    // Soft form shading over the drawn pixels only (source-atop): a warm top rim
+    // light, a grounded shadow at the feet, and a gentle left-key / right-fill so
+    // the flat art gains volume. Done in device-pixel space (full canvas).
+    const DW=ETW*ENEMY_TEX_SCALE, DH=ETH*ENEMY_TEX_SCALE;
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.globalCompositeOperation='source-atop';
+    const vert=ctx.createLinearGradient(0,0,0,DH);
+    vert.addColorStop(0,'rgba(255,240,214,0.18)');    // top rim light
+    vert.addColorStop(0.34,'rgba(255,255,255,0)');
+    vert.addColorStop(1,'rgba(0,0,0,0.36)');          // shadow toward the feet
+    ctx.fillStyle=vert; ctx.fillRect(0,0,DW,DH);
+    const side=ctx.createLinearGradient(0,0,DW,0);
+    side.addColorStop(0,'rgba(255,226,184,0.12)');    // key light from the left
+    side.addColorStop(0.5,'rgba(0,0,0,0)');
+    side.addColorStop(1,'rgba(0,0,0,0.18)');          // fill shadow on the right
+    ctx.fillStyle=side; ctx.fillRect(0,0,DW,DH);
+    ctx.restore();
+
+    // A dark silhouette keeps each sprite readable against bright fire and dark stone.
+    // Widened to 2px to match the doubled resolution.
+    const mask=document.createElement('canvas'); mask.width=DW; mask.height=DH;
+    const mctx=mask.getContext('2d'); mctx.drawImage(c,0,0); mctx.globalCompositeOperation='source-in';
+    mctx.fillStyle='rgba(4,3,8,0.94)'; mctx.fillRect(0,0,DW,DH);
+    const outlined=document.createElement('canvas'); outlined.width=DW; outlined.height=DH;
+    const octx=outlined.getContext('2d');
+    for(const [ox,oy] of [[-2,0],[2,0],[0,-2],[0,2],[-2,-2],[2,-2],[-2,2],[2,2],[-1,0],[1,0],[0,-1],[0,1]]) octx.drawImage(mask,ox,oy);
+    octx.drawImage(c,0,0);
+    const t=finishEnemyTex(outlined); PERSISTENT_MAPS.add(t); eTexCache[key]=t; return t;
+  }
+
+  // ── Audio system (Web Audio API) ──────────────────────────────────────────
+  //
+  // Mix hierarchy. The old mix was inverted: the bow -- the sound you hear most
+  // often, several times a second -- was the loudest thing in the game at 0.5,
+  // while pickups and the level-clear fanfare sat near 0.05. That is fatiguing,
+  // it buries every reward, and it pinned the master compressor so the music
+  // pumped on every shot.
+  //
+  // Levels below are pre-bus peaks, grouped by how often you hear them. The rule
+  // is simply: the more often a sound fires, the quieter it has to sit.
+  //
+  //   rare + important (gate, level clear, death, key)  0.30 - 0.50
+  //   combat feedback  (kill, take a hit, enemy swing)  0.18 - 0.30
+  //   every-shot       (bow, hit confirm, melee)        0.08 - 0.16
+  //   locomotion       (footsteps, landing)             0.04 - 0.08
+  //   idle texture     (mob mutters, drips, wind)       0.03 - 0.06
+  //
+  let AC=null, _noiseBuf=null, _masterGain=null, _sfxGain=null, _ambGain=null, _duckGain=null;
+  let _musicGain=null, _musicFilter=null, _melodyTimer=null, _musicActive=false;
+  let _tensionGain=null, _tensionOscs=[];
+  let _reverb=null, _reverbReturn=null, _sfxReverbSend=null;
+  const _musicSources=new Set(), _ambientTimers=new Set();
+  // Bus trims, measured rather than guessed. The score is a bed: it must sit
+  // clearly UNDER the gameplay bus, or the bow -- the sound carrying all of your
+  // moment-to-moment feedback -- disappears beneath it.
+  const AUDIO_MASTER_GAIN=1.9, MUSIC_GAIN_BOOST=0.55, SFX_GAIN_BOOST=1.6, AMBIENT_GAIN_BOOST=1.0;
+  const MUSIC_FILTER_BASE=1800, MUSIC_FILTER_RANGE=1500;
+  const boostedAudioGain=(value,boost)=>Math.min(1.6,Math.max(0,value*boost));
+
+  let _audioFailNoted=false;
+  function initAudio(){
+    if(AC) { if(AC.state==='suspended') AC.resume(); _startMusic(); return; }
+    try{ AC=new(window.AudioContext||window.webkitAudioContext)(); }
+    catch(e){
+      // Swallowing this made a real audio failure indistinguishable from muted
+      // sliders: every call site checks `if(AC)` and silently no-ops forever.
+      if(!_audioFailNoted){ _audioFailNoted=true; statusEl.textContent='Audio unavailable on this system'; }
+      return;
+    }
+    // A safety limiter, not a compressor. The old -12dB/5:1 setting sat below the
+    // level of ordinary gameplay, so it was gain-riding the whole mix constantly.
+    // Now it only catches genuine peaks.
+    const limiter=AC.createDynamicsCompressor();
+    limiter.threshold.value=-2; limiter.knee.value=2; limiter.ratio.value=12; limiter.attack.value=0.002; limiter.release.value=0.14;
+    _masterGain=AC.createGain(); _masterGain.gain.value=AUDIO_MASTER_GAIN; _masterGain.connect(limiter); limiter.connect(AC.destination);
+
+    // Music and ambience share a duck bus. Loud one-shots dip it briefly so combat
+    // punches through, instead of letting the master limiter squash everything.
+    _duckGain=AC.createGain(); _duckGain.gain.value=1; _duckGain.connect(_masterGain);
+
+    _sfxGain=AC.createGain(); _sfxGain.gain.value=boostedAudioGain(settings.sfx,SFX_GAIN_BOOST); _sfxGain.connect(_masterGain);
+    _ambGain=AC.createGain(); _ambGain.gain.value=boostedAudioGain(settings.ambient,AMBIENT_GAIN_BOOST); _ambGain.connect(_duckGain);
+
+    // Long, dark stone-hall slap-back on the ambience bus.
+    const echo=AC.createDelay(1); echo.delayTime.value=0.23;
+    const echoFilter=AC.createBiquadFilter(); echoFilter.type='lowpass'; echoFilter.frequency.value=1100;
+    const echoGain=AC.createGain(); echoGain.gain.value=0.26;
+    const echoFb=AC.createGain(); echoFb.gain.value=0.22;
+    _ambGain.connect(echo); echo.connect(echoFilter); echoFilter.connect(echoGain); echoGain.connect(_duckGain);
+    echoFilter.connect(echoFb); echoFb.connect(echo);
+
+    // Convolution reverb — the diffuse field the single delay tap can't give. A
+    // procedural, darkened impulse response makes every shot, hit and kill trail
+    // off into the cavernous keep. The return sits on the master (not the duck
+    // bus) so combat tails stay present, but at a modest wet level to avoid mud.
+    _reverb=AC.createConvolver(); _reverb.buffer=_makeReverbIR(2.7,2.5,0.72);
+    _reverbReturn=AC.createGain(); _reverbReturn.gain.value=0.5; _reverbReturn.connect(_masterGain);
+    _reverb.connect(_reverbReturn);
+    // Sends: SFX get a light spatial tail; ambience feeds it more heavily for depth.
+    _sfxReverbSend=AC.createGain(); _sfxReverbSend.gain.value=0.16; _sfxGain.connect(_sfxReverbSend); _sfxReverbSend.connect(_reverb);
+    const ambSend=AC.createGain(); ambSend.gain.value=0.34; _ambGain.connect(ambSend); ambSend.connect(_reverb);
+
+    if(AC.state==='suspended') AC.resume();
+    _startMusic();
+  }
+
+  // Sidechain: dip music + ambience under a loud hit, then let them breathe back.
+  function _duck(amount=0.62,hold=0.05,release=0.30){
+    if(!_duckGain) return;
+    const t=AC.currentTime, g=_duckGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value,t);
+    g.linearRampToValueAtTime(amount,t+0.015);
+    g.setValueAtTime(amount,t+0.015+hold);
+    g.linearRampToValueAtTime(1,t+0.015+hold+release);
+  }
+
+  function _trackMusicSource(source){
+    _musicSources.add(source);
+    source.addEventListener('ended',()=>_musicSources.delete(source),{once:true});
+    return source;
+  }
+
+  function _ambientTimeout(fn,delay){
+    const id=setTimeout(()=>{_ambientTimers.delete(id);fn();},delay);
+    _ambientTimers.add(id); return id;
+  }
+
+  function _stopMusic(){
+    _musicActive=false;
+    if(_melodyTimer!==null){clearTimeout(_melodyTimer);_melodyTimer=null;}
+    for(const id of _ambientTimers) clearTimeout(id);
+    _ambientTimers.clear();
+    for(const source of _musicSources){try{source.stop();}catch(_){} source.disconnect();}
+    _musicSources.clear();
+    for(const o of _tensionOscs){try{o.stop();}catch(_){} o.disconnect();}
+    _tensionOscs=[];
+    if(_tensionGain){_tensionGain.disconnect();_tensionGain=null;}
+    if(_musicGain){_musicGain.disconnect();_musicGain=null;}
+    if(_musicFilter){_musicFilter.disconnect();_musicFilter=null;}
+  }
+
+  function _nb(){
+    if(_noiseBuf) return _noiseBuf;
+    const sr=AC.sampleRate, buf=AC.createBuffer(1,sr*2,sr), d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    return(_noiseBuf=buf);
+  }
+
+  // Procedural stone-hall impulse response: exponentially-decaying noise, one-pole
+  // low-passed so the tail is dark (stone absorbs the highs), with the two channels
+  // decorrelated for width. seconds = tail length, decay = how fast it fades,
+  // lp = low-pass amount (higher = darker).
+  function _makeReverbIR(seconds=2.7, decay=2.5, lp=0.72){
+    const rate=AC.sampleRate, len=Math.max(1,Math.floor(rate*seconds));
+    const buf=AC.createBuffer(2,len,rate);
+    for(let ch=0;ch<2;ch++){
+      const d=buf.getChannelData(ch); let prev=0;
+      // A short pre-delay of near-silence before the diffuse tail builds.
+      const pre=Math.floor(rate*0.012);
+      for(let i=0;i<len;i++){
+        const white=Math.random()*2-1;
+        prev=prev*lp+white*(1-lp);                 // one-pole low-pass -> darker
+        const env=i<pre?(i/pre)*0.3:Math.pow(1-(i-pre)/(len-pre),decay);
+        d[i]=prev*env;
+      }
+    }
+    return buf;
+  }
+
+  function _o(vol){
+    const g=AC.createGain(); g.gain.value=vol;
+    g.connect(_sfxGain); return g;
+  }
+
+  // Positional bus: pan by world offset, and roll off both level and brightness
+  // with distance so a goliath bellowing across the keep sits behind the one
+  // chewing on your face.
+  function _oAt(vol,worldX=null,worldZ=null){
+    const g=AC.createGain();
+    let level=vol;
+    if(worldX!=null&&worldZ!=null){
+      const dist=Math.hypot(worldX-player.x,worldZ-player.z);
+      level=vol*Math.max(0.16,1/(1+dist*0.16));
+      const lp=AC.createBiquadFilter(); lp.type='lowpass';
+      lp.frequency.value=Math.max(700,5200-dist*280);
+      g.gain.value=level; g.connect(lp);
+      _connectSfx(lp,worldX,worldZ);
+      return g;
+    }
+    g.gain.value=level;
+    _connectSfx(g,worldX);
+    return g;
+  }
+
+  function _connectSfx(node,worldX=null,worldZ=null){
+    if(worldX!=null&&AC.createStereoPanner){
+      let lateral;
+      if(worldZ!=null){
+        // Project onto the camera's right vector (cos yaw, -sin yaw), matching the
+        // strafe basis in updateMovement, so panning follows where the player is
+        // FACING. Panning on raw world X meant a sound directly behind you was
+        // indistinguishable from one directly ahead at the same lateral offset.
+        const dx=worldX-player.x, dz=worldZ-player.z;
+        lateral=dx*Math.cos(player.yaw)-dz*Math.sin(player.yaw);
+      } else lateral=worldX-player.x;
+      const pan=AC.createStereoPanner();
+      pan.pan.value=Math.max(-0.8,Math.min(0.8,lateral/6));
+      node.connect(pan); pan.connect(_sfxGain); return;
+    }
+    node.connect(_sfxGain);
+  }
+
+  // A volley can land up to 9 arrows at once (one per ray). Without this, every
+  // one of them would fire a full-volume hit sound on the same frame.
+  let _lastHitT=-1, _hitStack=0;
+  // Generalised version of the collapse hit() already did for arrow impacts.
+  // Simultaneous events were just as reachable in three other places and had no
+  // guard at all: being swarmed fires a full-detail enemyAttack AND hurt per
+  // attacker in the same frame, and a tier-6 volley seeks nine different enemies,
+  // so it can one-shot a hound pack and play nine undamped death screeches at
+  // once. Both are core designed states, not edge cases.
+  const _sfxStacks=Object.create(null);
+  function _stackAtten(key,window=0.07,falloff=0.85,floor=0.22){
+    if(!AC) return 0;
+    const t=AC.currentTime;
+    const s=_sfxStacks[key]||(_sfxStacks[key]={t:-1,n:0});
+    if(t-s.t<window) s.n++; else s.n=0;
+    s.t=t;
+    const a=1/(1+s.n*falloff);
+    return a<floor?0:a;
+  }
+
+  const sfx={
+    // Fires several times a second, so it has to be short and modest. The old one
+    // was the loudest sound in the game with a 0.42s tail -- at tier 6 (a shot
+    // every 0.22s) the tails overlapped into a permanent whistle.
+    shoot(tier=0){
+      if(!AC) return;
+      const t=AC.currentTime;
+      const mg=_o(0.26);
+      // Woody limb thock -- the body of the bow, gives the shot weight.
+      const bo=AC.createOscillator(); bo.type='triangle';
+      const bf=AC.createBiquadFilter(); bf.type='lowpass'; bf.frequency.value=420;
+      const bg=AC.createGain(); bg.gain.setValueAtTime(0.55,t); bg.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+      bo.frequency.setValueAtTime(150+tier*10,t); bo.frequency.exponentialRampToValueAtTime(62,t+0.09);
+      bo.connect(bf); bf.connect(bg); bg.connect(mg); bo.start(t); bo.stop(t+0.10);
+      // String snap -- the transient that makes it read as a release.
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='bandpass'; nf.frequency.value=1500+tier*120; nf.Q.value=3.2;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.62,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.055);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.06);
+      // Fletching hiss, cut short so rapid fire stays crisp.
+      const wo=AC.createOscillator(); wo.type='sawtooth';
+      const wf=AC.createBiquadFilter(); wf.type='bandpass'; wf.frequency.value=2200; wf.Q.value=9;
+      const wg=AC.createGain(); wg.gain.setValueAtTime(0.20,t+0.015); wg.gain.exponentialRampToValueAtTime(0.001,t+0.17);
+      wo.frequency.setValueAtTime(1700+tier*90,t+0.015); wo.frequency.exponentialRampToValueAtTime(620+tier*30,t+0.17);
+      wo.connect(wf); wf.connect(wg); wg.connect(mg); wo.start(t+0.015); wo.stop(t+0.18);
+      // Enchanted bows get a bright shimmer on top so tiering up sounds like power.
+      if(tier>=3){
+        const ch=AC.createOscillator(); ch.type='sine';
+        const cg=AC.createGain(); cg.gain.setValueAtTime(0.22,t); cg.gain.exponentialRampToValueAtTime(0.001,t+0.20);
+        ch.frequency.setValueAtTime(680+tier*110,t); ch.frequency.exponentialRampToValueAtTime(1500+tier*160,t+0.17);
+        ch.connect(cg); cg.connect(mg); ch.start(t); ch.stop(t+0.21);
+      }
+    },
+    // The single biggest feel gap: arrows landing used to be completely silent,
+    // so you could not tell a hit from a miss until something finally died.
+    hit(worldX=null,worldZ=null,tier=0){
+      if(!AC) return;
+      const t=AC.currentTime;
+      // Stacked hits from one volley collapse toward a single thud.
+      if(t-_lastHitT<0.06) _hitStack++; else _hitStack=0;
+      _lastHitT=t;
+      const atten=1/(1+_hitStack*0.85);
+      if(atten<0.22) return;
+      const mg=_oAt(0.38*atten,worldX,worldZ);
+      // Wet impact body.
+      const o=AC.createOscillator(); o.type='triangle';
+      const f=AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value=520;
+      const g=AC.createGain(); g.gain.setValueAtTime(0.7,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.11);
+      o.frequency.setValueAtTime(190,t); o.frequency.exponentialRampToValueAtTime(78,t+0.11);
+      o.connect(f); f.connect(g); g.connect(mg); o.start(t); o.stop(t+0.12);
+      // Sharp leather/flesh transient -- this is what reads as "connected".
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='bandpass'; nf.frequency.value=900; nf.Q.value=1.4;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.8,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.07);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.08);
+      if(tier>=3){
+        const z=AC.createOscillator(); z.type='sine';
+        const zg=AC.createGain(); zg.gain.setValueAtTime(0.25,t); zg.gain.exponentialRampToValueAtTime(0.001,t+0.14);
+        z.frequency.setValueAtTime(1400,t); z.frequency.exponentialRampToValueAtTime(500,t+0.13);
+        z.connect(zg); zg.connect(mg); z.start(t); z.stop(t+0.15);
+      }
+    },
+    melee(){
+      if(!AC) return;
+      const t=AC.currentTime, mg=_o(0.13);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const f=AC.createBiquadFilter(); f.type='bandpass'; f.frequency.value=1900; f.Q.value=1.1;
+      f.frequency.setValueAtTime(2600,t); f.frequency.exponentialRampToValueAtTime(700,t+0.16);
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.75,t+0.03); g.gain.exponentialRampToValueAtTime(0.001,t+0.17);
+      ns.connect(f); f.connect(g); g.connect(mg); ns.start(t); ns.stop(t+0.18);
+    },
+    hurt(){
+      if(!AC) return;
+      // Being surrounded put several attackers off cooldown on the same frame,
+      // each firing a full-volume crunch plus its own duck re-trigger.
+      const at=_stackAtten('hurt',0.08);
+      if(!at) return;
+      _duck(0.55*at,0.06,0.34);
+      const t=AC.currentTime, mg=_o(0.40*at);
+      // Painful crunch noise
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=700;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.9,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.22);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.24);
+      // Guttural grunt
+      const o=AC.createOscillator(); o.type='sawtooth';
+      const of2=AC.createBiquadFilter(); of2.type='lowpass'; of2.frequency.value=320; of2.Q.value=5;
+      const og=AC.createGain(); og.gain.setValueAtTime(0.5,t+0.02); og.gain.exponentialRampToValueAtTime(0.001,t+0.28);
+      o.frequency.setValueAtTime(160,t+0.02); o.frequency.exponentialRampToValueAtTime(70,t+0.28);
+      o.connect(of2); of2.connect(og); og.connect(mg); o.start(t+0.02); o.stop(t+0.30);
+      // Dissonant stinger -- a tritone stab that makes damage register emotionally.
+      [233,330].forEach((freq,i)=>{
+        const s=AC.createOscillator(); s.type='triangle'; s.frequency.value=freq;
+        const sf=AC.createBiquadFilter(); sf.type='lowpass'; sf.frequency.value=1200;
+        const sg=AC.createGain(); sg.gain.setValueAtTime(0.16-i*0.04,t); sg.gain.exponentialRampToValueAtTime(0.001,t+0.34);
+        s.connect(sf); sf.connect(sg); sg.connect(mg); s.start(t); s.stop(t+0.36);
+      });
+    },
+    // Enemy winding up a swing. Telegraphs the hit that is about to land on you.
+    enemyAttack(type='grunt',worldX=null,worldZ=null){
+      if(!AC) return;
+      const t=AC.currentTime;
+      const heavy=type==='brute'||type==='goliath'||type==='miniboss';
+      const at=_stackAtten('enemyAttack',0.07);
+      if(!at) return;
+      const mg=_oAt((heavy?0.30:0.20)*at,worldX,worldZ);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const f=AC.createBiquadFilter(); f.type='bandpass'; f.Q.value=0.9;
+      const dur=heavy?0.30:0.18;
+      f.frequency.setValueAtTime(heavy?1100:2000,t);
+      f.frequency.exponentialRampToValueAtTime(heavy?260:600,t+dur);
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.8,t+dur*0.3); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+      ns.connect(f); f.connect(g); g.connect(mg); ns.start(t); ns.stop(t+dur+0.02);
+      if(heavy){
+        const o=AC.createOscillator(); o.type='sawtooth';
+        const of2=AC.createBiquadFilter(); of2.type='lowpass'; of2.frequency.value=180;
+        const og=AC.createGain(); og.gain.setValueAtTime(0.5,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.34);
+        o.frequency.setValueAtTime(70,t); o.frequency.exponentialRampToValueAtTime(38,t+0.34);
+        o.connect(of2); of2.connect(og); og.connect(mg); o.start(t); o.stop(t+0.36);
+      }
+    },
+    spellCast(worldX=null,worldZ=null){
+      if(!AC) return;
+      const t=AC.currentTime, mg=_oAt(0.24,worldX,worldZ);
+      const o=AC.createOscillator(); o.type='sawtooth';
+      const f=AC.createBiquadFilter(); f.type='bandpass'; f.frequency.value=800; f.Q.value=4;
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.6,t+0.06); g.gain.exponentialRampToValueAtTime(0.001,t+0.42);
+      o.frequency.setValueAtTime(180,t); o.frequency.exponentialRampToValueAtTime(720,t+0.30);
+      o.connect(f); f.connect(g); g.connect(mg); o.start(t); o.stop(t+0.44);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='highpass'; nf.frequency.value=1800;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.22,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.36);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.38);
+    },
+    spellHit(){
+      if(!AC) return;
+      _duck(0.6,0.04,0.26);
+      const t=AC.currentTime, mg=_o(0.34);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=1600;
+      nf.frequency.exponentialRampToValueAtTime(300,t+0.30);
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.9,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.32);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.34);
+      const o=AC.createOscillator(); o.type='triangle';
+      const g=AC.createGain(); g.gain.setValueAtTime(0.5,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.26);
+      o.frequency.setValueAtTime(240,t); o.frequency.exponentialRampToValueAtTime(58,t+0.26);
+      o.connect(g); g.connect(mg); o.start(t); o.stop(t+0.28);
+    },
+    enemyDie(type='grunt',worldX=null,worldZ=null){
+      if(!AC) return;
+      const boss=type==='miniboss';
+      // Bosses and goliaths are singular events and keep their full weight; only
+      // trash deaths collapse, which is the case a volley can multiply.
+      const at=boss?1:_stackAtten('enemyDie',0.07);
+      if(!at) return;
+      if(boss||type==='goliath') _duck(0.55,0.10,0.5);
+      const t=AC.currentTime, mg=_oAt((boss?0.46:0.30)*at,worldX,worldZ);
+      // Death screech
+      const o=AC.createOscillator(); o.type='square';
+      const of2=AC.createBiquadFilter(); of2.type='bandpass'; of2.frequency.value=700; of2.Q.value=2;
+      const og=AC.createGain(); og.gain.setValueAtTime(0.65,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.55);
+      const deathPitch={grunt:330,soldier:410,brute:230,spectre:620,fiend:510,goliath:150,miniboss:190}[type]||360;
+      o.frequency.setValueAtTime(deathPitch,t); o.frequency.linearRampToValueAtTime(type==='spectre'?120:55,t+0.55);
+      o.connect(of2); of2.connect(og); og.connect(mg); o.start(t); o.stop(t+0.57);
+      // Noise burst
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=1400;
+      const ng2=AC.createGain(); ng2.gain.setValueAtTime(0.85,t); ng2.gain.exponentialRampToValueAtTime(0.001,t+0.4);
+      ns.connect(nf); nf.connect(ng2); ng2.connect(mg); ns.start(t); ns.stop(t+0.42);
+      // A guardian falling deserves more than a louder grunt.
+      if(boss){
+        [98,73.4,49].forEach((freq,i)=>{
+          const b=AC.createOscillator(); b.type='triangle'; b.frequency.value=freq;
+          const bf=AC.createBiquadFilter(); bf.type='lowpass'; bf.frequency.value=520;
+          const bg=AC.createGain(); const d=i*0.16;
+          bg.gain.setValueAtTime(0,t+d); bg.gain.linearRampToValueAtTime(0.34,t+d+0.05); bg.gain.exponentialRampToValueAtTime(0.001,t+d+1.3);
+          b.connect(bf); bf.connect(bg); bg.connect(mg); b.start(t+d); b.stop(t+d+1.35);
+        });
+      }
+    },
+    // Rewards were the quietest sounds in the game. They are now the clearest,
+    // and each pickup gets its own recognisable motif.
+    pickup(type){
+      if(!AC) return;
+      const t=AC.currentTime;
+      const loud=type==='key'||type==='upgrade'||type==='armor';
+      if(loud) _duck(0.66,0.08,0.45);
+      const mg=_o(loud?0.44:0.30);
+      const freqs=type==='ammo'?[294,392]
+        :type==='key'?[440,554,659,880]
+        :type==='upgrade'?[330,494,659,988]
+        :type==='armor'?[196,294,392,587]
+        :[349,523];
+      freqs.forEach((freq,i)=>{
+        const d=i*0.065;
+        const o=AC.createOscillator(); o.type=loud?'triangle':'sine'; o.frequency.value=freq;
+        const g=AC.createGain();
+        g.gain.setValueAtTime(0,t+d); g.gain.linearRampToValueAtTime(loud?0.42:0.34,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+(loud?0.55:0.32));
+        o.connect(g); g.connect(mg); o.start(t+d); o.stop(t+d+(loud?0.58:0.34));
+        // A shimmering octave above keeps the fanfare from sounding like a beep.
+        if(loud){
+          const h=AC.createOscillator(); h.type='sine'; h.frequency.value=freq*2;
+          const hg=AC.createGain();
+          hg.gain.setValueAtTime(0,t+d); hg.gain.linearRampToValueAtTime(0.13,t+d+0.03); hg.gain.exponentialRampToValueAtTime(0.001,t+d+0.5);
+          h.connect(hg); hg.connect(mg); h.start(t+d); h.stop(t+d+0.52);
+        }
+      });
+    },
+    // Pulses under the HUD when you are nearly dead. Cheap, and it does more for
+    // tension than any amount of music.
+    heartbeat(intensity=1){
+      if(!AC) return;
+      const t=AC.currentTime, mg=_o(0.30*intensity);
+      [0,0.17].forEach((d,i)=>{
+        const o=AC.createOscillator(); o.type='sine';
+        const f=AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value=120;
+        const g=AC.createGain();
+        g.gain.setValueAtTime(0,t+d); g.gain.linearRampToValueAtTime(i?0.6:0.9,t+d+0.02); g.gain.exponentialRampToValueAtTime(0.001,t+d+0.20);
+        o.frequency.setValueAtTime(62,t+d); o.frequency.exponentialRampToValueAtTime(34,t+d+0.20);
+        o.connect(f); f.connect(g); g.connect(mg); o.start(t+d); o.stop(t+d+0.22);
+      });
+    },
+    gate(){
+      if(!AC) return;
+      _duck(0.6,0.15,0.7);
+      const t=AC.currentTime, mg=_o(0.50);
+      // Heavy iron gate creak
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='bandpass'; nf.frequency.value=160; nf.Q.value=0.7;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0,t); ng.gain.linearRampToValueAtTime(0.9,t+0.12); ng.gain.exponentialRampToValueAtTime(0.001,t+1.4);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+1.5);
+      [65,50,38].forEach((freq,i)=>{
+        const o=AC.createOscillator(); o.type='sawtooth'; o.frequency.value=freq;
+        const g=AC.createGain(); const d=i*0.18;
+        g.gain.setValueAtTime(0.28,t+d); g.gain.exponentialRampToValueAtTime(0.001,t+d+1.0);
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=280;
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t+d); o.stop(t+d+1.02);
+      });
+    },
+    levelClear(){
+      if(!AC) return;
+      _duck(0.45,0.3,1.1);
+      const t=AC.currentTime, mg=_o(0.46);
+      // Eerie minor chord rise, now with an octave layer so it lands as a payoff
+      // rather than a muffled hum under the music.
+      [220,261,311,392].forEach((freq,i)=>{
+        const d=i*0.13;
+        const o=AC.createOscillator(); o.type='triangle'; o.frequency.value=freq;
+        const g=AC.createGain();
+        g.gain.setValueAtTime(0,t+d); g.gain.linearRampToValueAtTime(0.34,t+d+0.07); g.gain.exponentialRampToValueAtTime(0.001,t+d+1.2);
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=2200;
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t+d); o.stop(t+d+1.25);
+        const h=AC.createOscillator(); h.type='sine'; h.frequency.value=freq*2;
+        const hg=AC.createGain();
+        hg.gain.setValueAtTime(0,t+d); hg.gain.linearRampToValueAtTime(0.12,t+d+0.09); hg.gain.exponentialRampToValueAtTime(0.001,t+d+1.0);
+        h.connect(hg); hg.connect(mg); h.start(t+d); h.stop(t+d+1.05);
+      });
+    },
+    gameOver(){
+      if(!AC) return;
+      _duck(0.25,0.6,1.8);
+      const t=AC.currentTime, mg=_o(0.52);
+      // Death toll — deep descending minor
+      [110,98,82,65].forEach((freq,i)=>{
+        const o=AC.createOscillator(); o.type='triangle'; o.frequency.value=freq;
+        const g=AC.createGain(); const d=i*0.30;
+        g.gain.setValueAtTime(0,t+d); g.gain.linearRampToValueAtTime(0.36,t+d+0.05); g.gain.exponentialRampToValueAtTime(0.001,t+d+1.2);
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=600;
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t+d); o.stop(t+d+1.25);
+      });
+      // Wind noise gust
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=350;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0,t); ng.gain.linearRampToValueAtTime(0.28,t+0.35); ng.gain.exponentialRampToValueAtTime(0.001,t+2.0);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+2.1);
+    },
+    // Twice a second, forever -- so it sits low and textural. The old version was
+    // a bare lowpassed thud at nearly the level of an enemy death.
+    footstep(){
+      if(!AC) return;
+      const t=AC.currentTime, mg=_o(0.075);
+      // Boot body on stone.
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=150+Math.random()*90;
+      const ng=AC.createGain(); ng.gain.setValueAtTime(0.85+Math.random()*0.25,t); ng.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+      ns.connect(nf); nf.connect(ng); ng.connect(mg); ns.start(t); ns.stop(t+0.09);
+      // Grit scuff on top -- this is what makes it read as stone rather than a thud.
+      const gs=AC.createBufferSource(); gs.buffer=_nb();
+      const gf=AC.createBiquadFilter(); gf.type='bandpass'; gf.frequency.value=2400+Math.random()*1600; gf.Q.value=0.8;
+      const gg=AC.createGain(); gg.gain.setValueAtTime(0.30+Math.random()*0.16,t); gg.gain.exponentialRampToValueAtTime(0.001,t+0.055);
+      gs.connect(gf); gf.connect(gg); gg.connect(mg); gs.start(t); gs.stop(t+0.06);
+    },
+    land(){
+      if(!AC) return;
+      const t=AC.currentTime, mg=_o(0.13);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const f=AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value=135;
+      const g=AC.createGain(); g.gain.setValueAtTime(0.9,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.13);
+      ns.connect(f); f.connect(g); g.connect(mg); ns.start(t); ns.stop(t+0.14);
+      const gs=AC.createBufferSource(); gs.buffer=_nb();
+      const gf=AC.createBiquadFilter(); gf.type='bandpass'; gf.frequency.value=2100; gf.Q.value=0.7;
+      const gg=AC.createGain(); gg.gain.setValueAtTime(0.42,t); gg.gain.exponentialRampToValueAtTime(0.001,t+0.08);
+      gs.connect(gf); gf.connect(gg); gg.connect(mg); gs.start(t); gs.stop(t+0.09);
+    },
+    // Alerts now attenuate with distance, so a goliath waking up across the keep
+    // reads as far away instead of bellowing directly into your ear.
+    mobAlert(type,worldX=null,worldZ=null){
+      if(!AC) return;
+      const t=AC.currentTime;
+      if(type==='grunt'||type==='soldier'){
+        const mg=_oAt(0.24,worldX,worldZ);
+        const o=AC.createOscillator(); o.type='sawtooth';
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=300; f2.Q.value=6;
+        const g=AC.createGain(); g.gain.setValueAtTime(0.85,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.48);
+        o.frequency.setValueAtTime(type==='grunt'?85:120,t); o.frequency.exponentialRampToValueAtTime(type==='grunt'?38:62,t+0.48);
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t); o.stop(t+0.50);
+      } else if(type==='brute'||type==='goliath'){
+        const dur=type==='goliath'?0.9:0.6;
+        const mg=_oAt(0.34,worldX,worldZ);
+        const o=AC.createOscillator(); o.type='sawtooth';
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=140; f2.Q.value=10;
+        const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.95,t+0.07); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+        o.frequency.setValueAtTime(type==='goliath'?22:42,t);
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t); o.stop(t+dur+0.02);
+      } else if(type==='spectre'){
+        const mg=_oAt(0.22,worldX,worldZ);
+        const o=AC.createOscillator(); o.type='sine';
+        const lfo=AC.createOscillator(); lfo.type='sine'; lfo.frequency.value=6+Math.random()*3;
+        const lfoG=AC.createGain(); lfoG.gain.value=14; lfo.connect(lfoG); lfoG.connect(o.frequency);
+        const f2=AC.createBiquadFilter(); f2.type='bandpass'; f2.frequency.value=620; f2.Q.value=1.5;
+        const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.8,t+0.14); g.gain.exponentialRampToValueAtTime(0.001,t+1.0);
+        o.frequency.setValueAtTime(560,t); o.frequency.exponentialRampToValueAtTime(240,t+1.0);
+        o.connect(f2); f2.connect(g); g.connect(mg);
+        o.start(t); o.stop(t+1.02); lfo.start(t); lfo.stop(t+1.02);
+      } else if(type==='fiend'){
+        const mg=_oAt(0.22,worldX,worldZ);
+        const o=AC.createOscillator(); o.type='square';
+        const f2=AC.createBiquadFilter(); f2.type='bandpass'; f2.frequency.value=1100; f2.Q.value=3;
+        const g=AC.createGain(); g.gain.setValueAtTime(0.8,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.38);
+        o.frequency.setValueAtTime(800,t); o.frequency.exponentialRampToValueAtTime(1500,t+0.12); o.frequency.exponentialRampToValueAtTime(340,t+0.38);
+        o.connect(f2); f2.connect(g); g.connect(mg); o.start(t); o.stop(t+0.40);
+      } else if(type==='miniboss'){
+        const mg=_oAt(0.40,worldX,worldZ);
+        const o=AC.createOscillator(); o.type='sawtooth';
+        const o2=AC.createOscillator(); o2.type='square'; o2.detune.value=-18;
+        const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=220; f2.Q.value=7;
+        const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.95,t+0.10); g.gain.exponentialRampToValueAtTime(0.001,t+1.25);
+        o.frequency.setValueAtTime(58,t); o.frequency.exponentialRampToValueAtTime(30,t+1.2);
+        o2.frequency.setValueAtTime(58,t); o2.frequency.exponentialRampToValueAtTime(30,t+1.2);
+        o.connect(f2); o2.connect(f2); f2.connect(g); g.connect(mg);
+        o.start(t); o.stop(t+1.28); o2.start(t); o2.stop(t+1.28);
+      }
+    },
+    mobIdle(type,worldX=null,worldZ=null){
+      if(!AC||Math.random()>0.35) return;
+      const t=AC.currentTime, mg=_oAt(0.09,worldX,worldZ);
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const f2=AC.createBiquadFilter(); f2.type='lowpass';
+      f2.frequency.value=type==='spectre'?450:type==='fiend'?750:140;
+      const g=AC.createGain(); g.gain.setValueAtTime(0.8,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.30);
+      ns.connect(f2); f2.connect(g); g.connect(mg); ns.start(t); ns.stop(t+0.32);
+    },
+  };
+
+  function _startMusic(){
+    if(!AC||_musicActive) return;
+    _musicActive=true;
+    _musicGain=AC.createGain(); _musicGain.gain.value=boostedAudioGain(settings.music,MUSIC_GAIN_BOOST);
+    // The old 720Hz ceiling sat *below* the lead's own register, so the entire
+    // score collapsed into a low hum. Open it up and let the mood system sweep it.
+    _musicFilter=AC.createBiquadFilter(); _musicFilter.type='lowpass'; _musicFilter.frequency.value=MUSIC_FILTER_BASE; _musicFilter.Q.value=0.6;
+    _musicGain.connect(_musicFilter); _musicFilter.connect(_duckGain);
+
+    // A dread drone that swells only when enemies are actually closing on you.
+    // Silent the rest of the time -- it is the "something is coming" layer.
+    _tensionGain=AC.createGain(); _tensionGain.gain.value=0;
+    const tFilt=AC.createBiquadFilter(); tFilt.type='lowpass'; tFilt.frequency.value=340;
+    _tensionGain.connect(tFilt); tFilt.connect(_duckGain);
+    _tensionOscs=[];
+    [36.7,55,73.4].forEach((freq,i)=>{
+      const o=AC.createOscillator(); o.type=i===2?'sawtooth':'triangle'; o.frequency.value=freq;
+      o.detune.value=i===1?8:i===2?-11:0;
+      const g=AC.createGain(); g.gain.value=i===0?0.5:i===1?0.28:0.12;
+      o.connect(g); g.connect(_tensionGain); o.start();
+      _tensionOscs.push(o);
+    });
+
+    _scheduleMelody(AC.currentTime+1.2);
+    _scheduleAmbient();
+  }
+
+  function _scheduleMelody(start){
+    if(!_musicActive||!AC) return;
+    // Minor-key dungeon-crawler arrangement in A phrygian-dominant. Every part is
+    // a finite phrase, never a drone.
+    //
+    // The parts are now deliberately separated by register. Previously the bass,
+    // the chords AND the lead all lived under 200Hz, stacked on top of each other
+    // and then lowpassed at 720 -- which is why the score read as an undifferentiated
+    // rumble. Now: sub-bass / low-mid pad / mid lead / high ticks.
+    const scale=[55,58.3,65.4,69.3,77.8,92.5]; // A1 Bb1 C2 Db2 Eb2 F#2
+    const pat=[0,null,1,null,3,null,2,null,4,null,3,null,1,null,0,null,5,null,3,null,2,null,1,null];
+    const bl=0.42;
+
+    // Pad: chord swells, held up in the low-mids where they can be heard as harmony.
+    const chords=[[110,116.6,164.8],[92.4,110,146.8],[98,116.6,185],[82.4,110,155.6]];
+    chords.forEach((chord,bar)=>chord.forEach((freq,n)=>{
+      const t=start+bar*6*bl;
+      const o=_trackMusicSource(AC.createOscillator()); o.type=n===0?'triangle':'sine'; o.frequency.value=freq;
+      o.detune.value=n===1?6:n===2?-5:0;
+      const g=AC.createGain();
+      const peak=n===0?0.050:0.032;
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(peak,t+0.45);
+      g.gain.setValueAtTime(peak,t+4.0*bl); g.gain.exponentialRampToValueAtTime(0.001,t+5.6*bl);
+      const filt=AC.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=900; filt.Q.value=0.7;
+      o.connect(filt); filt.connect(g); g.connect(_musicGain); o.start(t); o.stop(t+5.8*bl);
+    }));
+
+    // Sub-bass: owns everything below ~120Hz on its own.
+    const bass=[55,null,55,null,46.2,null,46.2,null,49,null,49,null,41.2,null,41.2,null,55,null,55,null,46.2,null,49,null];
+    bass.forEach((freq,i)=>{
+      if(freq===null) return;
+      const t=start+i*bl;
+      const o=_trackMusicSource(AC.createOscillator()); o.type='triangle'; o.frequency.value=freq;
+      const g=AC.createGain();
+      // Kept under the gameplay bus on purpose -- the score is a bed, and it used
+      // to be the single loudest element in the entire mix.
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.13,t+0.035); g.gain.exponentialRampToValueAtTime(0.001,t+bl*0.82);
+      const filt=AC.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=200; filt.Q.value=0.8;
+      o.connect(filt); filt.connect(g); g.connect(_musicGain); o.start(t); o.stop(t+bl*0.9);
+    });
+
+    // Percussion: a dry stick tick, loud enough to actually be heard now (it was
+    // at 0.018, which is inaudible under anything).
+    for(let i=0;i<pat.length;i+=2){
+      const t=start+i*bl;
+      const ns=_trackMusicSource(AC.createBufferSource()); ns.buffer=_nb();
+      const f=AC.createBiquadFilter(); f.type='bandpass'; f.frequency.value=i%4===0?2200:3400; f.Q.value=1.8;
+      const g=AC.createGain(); g.gain.setValueAtTime(i%4===0?0.055:0.030,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.06);
+      ns.connect(f); f.connect(g); g.connect(_musicGain); ns.start(t); ns.stop(t+0.07);
+    }
+
+    // Lead: two octaves up from where it used to sit, so it is finally a melody
+    // rather than mud competing with the bass.
+    pat.forEach((n,i)=>{
+      if(n===null) return;
+      const t=start+i*bl;
+      if(t<AC.currentTime+0.05) return;
+      const o=_trackMusicSource(AC.createOscillator()); o.type=i%4===1?'square':'triangle'; o.frequency.value=scale[n]*8;
+      o.detune.value=i%3===0?-7:i%3===1?5:0;
+      const g=AC.createGain();
+      g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(i%4===1?0.055:0.075,t+0.05); g.gain.exponentialRampToValueAtTime(0.001,t+bl*1.15);
+      const filt=AC.createBiquadFilter(); filt.type='lowpass'; filt.frequency.value=2600; filt.Q.value=1.0;
+      o.connect(filt); filt.connect(g); g.connect(_musicGain);
+      o.start(t); o.stop(t+bl*1.25);
+      // Ghost octave below, quiet -- glues the lead to the pad.
+      const u=_trackMusicSource(AC.createOscillator()); u.type='sine'; u.frequency.value=scale[n]*4;
+      const ug=AC.createGain();
+      ug.gain.setValueAtTime(0,t); ug.gain.linearRampToValueAtTime(0.030,t+0.06); ug.gain.exponentialRampToValueAtTime(0.001,t+bl*1.0);
+      u.connect(ug); ug.connect(_musicGain); u.start(t); u.stop(t+bl*1.1);
+    });
+
+    const total=pat.length*bl;
+    _melodyTimer=setTimeout(()=>_scheduleMelody(start+total),Math.max(50,(start+total-AC.currentTime)*1000-100));
+  }
+
+  function _scheduleAmbient(){
+    if(!AC||!_musicActive) return;
+    // Stone drip
+    const drip=()=>{
+      if(!AC||!_musicActive) return;
+      const t=AC.currentTime, freq=900+Math.random()*700;
+      const o=AC.createOscillator(); o.type='sine'; o.frequency.value=freq;
+      const f2=AC.createBiquadFilter(); f2.type='bandpass'; f2.frequency.value=freq*1.1; f2.Q.value=14;
+      const g=AC.createGain(); g.gain.setValueAtTime(0.07,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.24);
+      o.connect(f2); f2.connect(g); g.connect(_ambGain); o.start(t); o.stop(t+0.26);
+      _ambientTimeout(drip,4000+Math.random()*11000);
+    };
+    // Distant moan
+    const moan=()=>{
+      if(!AC||!_musicActive) return;
+      const t=AC.currentTime, dur=2.0+Math.random()*1.8, base=100+Math.random()*90;
+      const o=AC.createOscillator(); o.type='sine';
+      const lfo=AC.createOscillator(); lfo.type='sine'; lfo.frequency.value=4+Math.random()*3;
+      const lfoG=AC.createGain(); lfoG.gain.value=10; lfo.connect(lfoG); lfoG.connect(o.frequency);
+      const f2=AC.createBiquadFilter(); f2.type='lowpass'; f2.frequency.value=480;
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.052,t+0.7); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+      o.frequency.setValueAtTime(base,t); o.frequency.exponentialRampToValueAtTime(base*0.80,t+dur);
+      o.connect(f2); f2.connect(g); g.connect(_ambGain); o.start(t); o.stop(t+dur+0.05); lfo.start(t); lfo.stop(t+dur+0.05);
+      _ambientTimeout(moan,14000+Math.random()*22000);
+    };
+    // Wind gust
+    const wind=()=>{
+      if(!AC||!_musicActive) return;
+      const t=AC.currentTime, dur=1.6+Math.random()*1.4;
+      const ns=AC.createBufferSource(); ns.buffer=_nb();
+      const f2=AC.createBiquadFilter(); f2.type='bandpass'; f2.frequency.value=280+Math.random()*180; f2.Q.value=0.5;
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(0.055,t+0.5); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+      ns.connect(f2); f2.connect(g); g.connect(_ambGain); ns.start(t); ns.stop(t+dur+0.1);
+      _ambientTimeout(wind,18000+Math.random()*28000);
+    };
+    // Loose chains shifting in a distant chamber.
+    const chains=()=>{
+      if(!AC||!_musicActive) return;
+      const t=AC.currentTime;
+      [0,0.09,0.21].forEach((delay,i)=>{
+        const o=AC.createOscillator(); o.type='triangle'; o.frequency.value=760-i*145+Math.random()*90;
+        const f=AC.createBiquadFilter(); f.type='bandpass'; f.frequency.value=1100-i*120; f.Q.value=5;
+        const g=AC.createGain(); g.gain.setValueAtTime(0.035,t+delay); g.gain.exponentialRampToValueAtTime(0.001,t+delay+0.28);
+        o.connect(f); f.connect(g); g.connect(_ambGain); o.start(t+delay); o.stop(t+delay+0.3);
+      });
+      _ambientTimeout(chains,17000+Math.random()*26000);
+    };
+    _ambientTimeout(drip,3000+Math.random()*7000);
+    _ambientTimeout(moan,9000+Math.random()*14000);
+    _ambientTimeout(wind,13000+Math.random()*18000);
+    _ambientTimeout(chains,11000+Math.random()*15000);
+  }
+
+  let _stepAccum=0, _nextStep=0.36, _audioMoodAccum=0, _heartAccum=0;
+
+  document.addEventListener('visibilitychange',()=>{
+    if(!AC) return;
+    if(document.hidden) AC.suspend();
+    else if(gameActive) AC.resume();
+  });
+  window.addEventListener('pagehide',_stopMusic);
+
+  // ── Map helpers ──────────────────────────────────────────────────────────────
+  function cellAt(cx,cz) {
+    if (cx<0||cz<0||cx>=worldW||cz>=worldH) return 1;
+    return currentMap[cz][cx];
+  }
+  function isSolid(v) { return v===1||v===7||v===8; }
+  function isWallAt(x,z) {
+    const cx=Math.floor(x),cz=Math.floor(z),cell=cellAt(cx,cz);
+    if(cell===7) return true;
+    if(isSolid(cell)){
+      for(const band of corridorBands){
+        if(band.axis==='h'&&x>=band.x1-0.5&&x<=band.x2+0.5&&Math.abs(z-(band.z+0.5))<0.625) return false;
+        if(band.axis==='v'&&z>=band.z1-0.5&&z<=band.z2+0.5&&Math.abs(x-(band.x+0.5))<0.625) return false;
+      }
+    }
+    return isSolid(cell);
+  }
+  function wallClearanceAt(x,z){
+    let sx=1,sz=1,ox=0,oz=0;
+    for(const band of corridorBands){
+      if(band.axis==='h'&&x>=band.x1&&x<=band.x2){
+        if(z===band.z-1){sz=0.75;oz=-0.125;}
+        if(z===band.z+1){sz=0.75;oz=0.125;}
+      }
+      if(band.axis==='v'&&z>=band.z1&&z<=band.z2){
+        if(x===band.x-1){sx=0.75;ox=-0.125;}
+        if(x===band.x+1){sx=0.75;ox=0.125;}
+      }
+    }
+    return {sx,sz,ox,oz};
+  }
+  // ── Decor collider spatial index ────────────────────────────────────────────
+  // Every decor query used to walk the level's entire collider list. steerEnemy
+  // calls enemyCanMoveTo up to 13 times per enemy per frame, and
+  // hasClearAttackPath samples ~80 points along a ray with a full scan at each --
+  // so at the current enemy counts a jammed corridor cost tens of thousands of
+  // collider comparisons per frame.
+  //
+  // Colliders are bucketed by grid cell instead, each registered into every cell
+  // its bounds (plus the largest radius any caller queries with) touch. A lookup
+  // then only tests the handful of props in its own cell.
+  const DECOR_QUERY_PAD = 0.75;
+  const EMPTY_DECOR = [];
+  let decorGrid = null;
+  // Cells an enemy physically cannot walk into because a prop fills them. The nav
+  // flood field consults this: without it the field is decor-blind and will
+  // happily route a chaser into a cell occupied by a throne, altar or hearth that
+  // enemyCanMoveTo then refuses, stalling the enemy against an obstacle the field
+  // keeps insisting is the way forward.
+  let navDecor = null;
+  function rebuildDecorGrid() {
+    decorGrid = new Array(worldW*worldH);
+    for (const c of decorColliders) {
+      const ex=(c.type==='circle'?c.r:c.hw)+DECOR_QUERY_PAD;
+      const ez=(c.type==='circle'?c.r:c.hd)+DECOR_QUERY_PAD;
+      const x0=Math.max(0,Math.floor(c.x-ex)), x1=Math.min(worldW-1,Math.floor(c.x+ex));
+      const z0=Math.max(0,Math.floor(c.z-ez)), z1=Math.min(worldH-1,Math.floor(c.z+ez));
+      for (let z=z0;z<=z1;z++) for (let x=x0;x<=x1;x++) {
+        const i=z*worldW+x;
+        (decorGrid[i]||(decorGrid[i]=[])).push(c);
+      }
+    }
+    // Second pass, now that lookups are cheap: mark cells whose centre an enemy
+    // cannot occupy. Mirrors enemyCanMoveTo's decor rule exactly, so the field can
+    // never recommend a step that movement will reject.
+    navDecor = new Uint8Array(worldW*worldH);
+    for (let z=0;z<worldH;z++) for (let x=0;x<worldW;x++) {
+      const px=x+0.5, pz=z+0.5;
+      let block=0, top=0, blocked=0;
+      for (const c of decorAt(px,pz)) {
+        const overlap=c.type==='circle'
+          ? (c.x-px)*(c.x-px)+(c.z-pz)*(c.z-pz) < (c.r+ENEMY_RADIUS)*(c.r+ENEMY_RADIUS)
+          : Math.abs(c.x-px) < c.hw+ENEMY_RADIUS && Math.abs(c.z-pz) < c.hd+ENEMY_RADIUS;
+        if (!overlap) continue;
+        block=Math.max(block,c.h||1.8);
+        if (c.walkTop) top=Math.max(top,c.walkTop);
+        if (block>ENEMY_STEP_HEIGHT && top>ENEMY_STEP_HEIGHT+0.06) { blocked=1; break; }
+      }
+      navDecor[z*worldW+x]=blocked;
+    }
+    navDirty=true;
+  }
+  // Falls back to the full list until the index exists, so decor queries made
+  // during level construction (before the grid is built) stay correct.
+  function decorAt(x,z) {
+    if (!decorGrid) return decorColliders;
+    const cx=Math.floor(x), cz=Math.floor(z);
+    if (cx<0||cz<0||cx>=worldW||cz>=worldH) return EMPTY_DECOR;
+    return decorGrid[cz*worldW+cx]||EMPTY_DECOR;
+  }
+
+  function hitsDecorAt(x,z,r=0) {
+    return decorAt(x,z).some(c=>{
+      if (c.type==='circle') return Math.hypot(c.x-x,c.z-z) < c.r + r;
+      const dx=Math.abs(c.x-x), dz=Math.abs(c.z-z);
+      return dx < c.hw + r && dz < c.hd + r;
+    });
+  }
+  function decorInfoAt(x,z,r=0) {
+    let height=0;
+    let walkTop=0;
+    for (const c of decorAt(x,z)) {
+      const overlap = c.type==='circle'
+        ? Math.hypot(c.x-x,c.z-z) < c.r + r
+        : Math.abs(c.x-x) < c.hw + r && Math.abs(c.z-z) < c.hd + r;
+      if (!overlap) continue;
+      height=Math.max(height,c.h||1.8);
+      if (c.walkTop) walkTop=Math.max(walkTop,c.walkTop);
+    }
+    return {height,walkTop};
+  }
+  function decorHeightAt(x,z,r=0) { return decorInfoAt(x,z,r).height; }
+  function walkSurfaceAt(x,z,r=0) {
+    return decorInfoAt(x,z,r).walkTop;
+  }
+  function canMoveTo(x,z,r,jumpY=0) {
+    const wallRadius=r+WALL_BUFFER;
+    let decorBlock=0, walkTop=0;
+    for (const c of decorAt(x,z)) {
+      const overlap=c.type==='circle'
+        ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+r)*(c.r+r)
+        : Math.abs(c.x-x) < c.hw+r && Math.abs(c.z-z) < c.hd+r;
+      if (!overlap) continue;
+      decorBlock=Math.max(decorBlock,c.h||1.8);
+      if (c.walkTop) walkTop=Math.max(walkTop,c.walkTop);
+    }
+    return !isWallAt(x-wallRadius,z-wallRadius)&&!isWallAt(x+wallRadius,z-wallRadius)&&!isWallAt(x-wallRadius,z+wallRadius)&&!isWallAt(x+wallRadius,z+wallRadius)
+      && !isWallAt(x,z-wallRadius)  &&!isWallAt(x,z+wallRadius)   &&!isWallAt(x-wallRadius,z) &&!isWallAt(x+wallRadius,z)
+      && (jumpY>=decorBlock-0.02 || (walkTop>0 && jumpY+0.16>=walkTop));
+  }
+  function enemyCanMoveTo(x,z,r,stepHeight=ENEMY_STEP_HEIGHT) {
+    let decorBlock=0, walkTop=0;
+    for (const c of decorAt(x,z)) {
+      const overlap=c.type==='circle'
+        ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+r)*(c.r+r)
+        : Math.abs(c.x-x) < c.hw+r && Math.abs(c.z-z) < c.hd+r;
+      if (!overlap) continue;
+      decorBlock=Math.max(decorBlock,c.h||1.8);
+      if (c.walkTop) walkTop=Math.max(walkTop,c.walkTop);
+      if (decorBlock>stepHeight && walkTop>stepHeight+0.06) return false;
+    }
+    return !isWallAt(x-r,z-r)&&!isWallAt(x+r,z-r)&&!isWallAt(x-r,z+r)&&!isWallAt(x+r,z+r)
+      && !isWallAt(x,z-r)  &&!isWallAt(x,z+r)   &&!isWallAt(x-r,z) &&!isWallAt(x+r,z)
+      && (decorBlock<=stepHeight || walkTop<=stepHeight+0.06);
+  }
+  function hasLOS(ax,az,bx,bz) {
+    const dx=bx-ax, dz=bz-az, dist=Math.hypot(dx,dz);
+    if (dist<0.001) return true;
+    const steps=Math.max(2,Math.ceil(dist/0.14));
+    for (let i=1;i<steps;i++) { const t=i/steps; if (isWallAt(ax+dx*t,az+dz*t)) return false; }
+    return true;
+  }
+  function clampArrowOrigin(origin){
+    const dx=origin.x-camera.position.x, dz=origin.z-camera.position.z;
+    const distance=Math.hypot(dx,dz);
+    if(distance<0.01) return;
+    const steps=Math.max(2,Math.ceil(distance/0.035));
+    for(let i=1;i<=steps;i++){
+      const t=i/steps;
+      if(isWallAt(camera.position.x+dx*t,camera.position.z+dz*t)){
+        const safeT=Math.max(0,(i-2)/steps);
+        origin.x=camera.position.x+dx*safeT;
+        origin.z=camera.position.z+dz*safeT;
+        return;
+      }
+    }
+  }
+  function hasClearAttackPath(ax,az,bx,bz) {
+    const dx=bx-ax, dz=bz-az, dist=Math.hypot(dx,dz);
+    if (dist<0.001) return true;
+    const steps=Math.max(2,Math.ceil(dist/0.12));
+    for (let i=1;i<steps;i++) {
+      const t=i/steps, x=ax+dx*t, z=az+dz*t;
+      for (const c of decorAt(x,z)) {
+        if ((c.h||1.8)<0.46) continue;
+        const overlap=c.type==='circle'
+          ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+0.08)*(c.r+0.08)
+          : Math.abs(c.x-x) < c.hw+0.08 && Math.abs(c.z-z) < c.hd+0.08;
+        if (overlap) return false;
+      }
+    }
+    return true;
+  }
+  function sealBorders(m) {
+    if (!m.length) return;
+    const lr=m.length-1, lc=m[0].length-1;
+    for (let x=0;x<=lc;x++) { m[0][x]=1; m[lr][x]=1; }
+    for (let z=0;z<=lr;z++) { m[z][0]=1; m[z][lc]=1; }
+  }
+
+  function disposeTransientObject(root) {
+    unregisterTransientLights(root);
+    root.traverse(n=>{
+      if (n.geometry) n.geometry.dispose();
+      if (n.material) [].concat(n.material).forEach(m=>{
+        if (m.map&&!PERSISTENT_MAPS.has(m.map)) m.map.dispose();
+        m.dispose();
+      });
+    });
+    if (root.parent) root.parent.remove(root);
+  }
+
+  // ── Clear level ──────────────────────────────────────────────────────────────
+  function clearLevel() {
+    const disposedGeometries=new Set();
+    const disposedMaterials=new Set();
+    const disposedMaps=new Set();
+    levelRoot.traverse(n=>{
+      if (n.isLight&&n.shadow&&n.shadow.map) { n.shadow.map.dispose(); n.shadow.map=null; }
+      if (n.geometry&&!disposedGeometries.has(n.geometry)) {
+        disposedGeometries.add(n.geometry);
+        n.geometry.dispose();
+      }
+      if (n.material) [].concat(n.material).forEach(m=>{
+        if (m.map&&!PERSISTENT_MAPS.has(m.map)&&!disposedMaps.has(m.map)) {
+          disposedMaps.add(m.map);
+          m.map.dispose();
+        }
+        if (!PERSISTENT_MATERIALS.has(m)&&!disposedMaterials.has(m)) {
+          disposedMaterials.add(m);
+          m.dispose();
+        }
+      });
+    });
+    while (levelRoot.children.length) levelRoot.remove(levelRoot.children[0]);
+    for(const a of arrows){if(a.mesh&&a.mesh.parent)a.mesh.parent.remove(a.mesh);}
+    for(const s of enemySpells){if(s.mesh)disposeTransientObject(s.mesh);}
+    for(const g of gibs){if(g.m.parent)g.m.parent.remove(g.m);g.m.geometry.dispose();g.m.material.dispose();}
+    enemies.length=pickups.length=torches.length=fireLights.length=fixtureLights.length=transientLights.length=ceilingDrips.length=mossStrands.length=gates.length=gibs.length=arrows.length=enemySpells.length=decorColliders.length=pendingDamage.length=0;
+    // The spatial index points at the colliders just cleared; drop it so decorAt
+    // falls back to the (now empty) list rather than serving stale props.
+    decorGrid=null; navDecor=null;
+    currentMapKeys = [];
+    currentRooms = [];
+    bossExitRoom = null;
+    levelExit={x:1.5,z:1.5,group:null,glow:null,seed:Math.random()*Math.PI*2};
+    if (advTimer) { clearTimeout(advTimer); advTimer=null; }
+  }
+
+  function inBossExitRoom(x,z) {
+    return !!bossExitRoom
+      && x>=bossExitRoom.x1&&x<=bossExitRoom.x2
+      && z>=bossExitRoom.z1&&z<=bossExitRoom.z2;
+  }
+
+  function findPickupSpot(x,z,minGap=0.7,maxRadius=2.4) {
+    const fits=(px,pz)=>canMoveTo(px,pz,0.22)
+      && !isWallAt(px,pz)
+      && pickups.every(p=>p.taken||Math.hypot(p.mesh.position.x-px,p.mesh.position.z-pz)>=minGap)
+      && currentMapKeys.every(k=>Math.hypot(k.x-px,k.z-pz)>=1.1)
+      && Math.hypot(levelExit.x-px,levelExit.z-pz)>=0.55;
+    if (fits(x,z)) return {x,z};
+    for (let r=0.35;r<=maxRadius;r+=0.2) {
+      for (let a=0;a<Math.PI*2;a+=Math.PI/10) {
+        const px=x+Math.cos(a)*r, pz=z+Math.sin(a)*r;
+        if (fits(px,pz)) return {x:px,z:pz};
+      }
+    }
+    return {x,z};
+  }
+
+  function spawnDropPickup(type,x,z,extra={}) {
+    const pos=findPickupSpot(x,z,type==='armor'?0.9:0.7);
+    spawnPickups([{x:pos.x,z:pos.z,type,...extra}]);
+  }
+
+  // ── Gibs ─────────────────────────────────────────────────────────────────────
+  function spawnGibs(pos,type='grunt') {
+    const palettes={
+      grunt:[0x314d1f,0x78934b], soldier:[0x741717,0x8c8f96], brute:[0x29143d,0x7b3f87],
+      spectre:[0x456aab,0xb5dcff], fiend:[0x690b08,0x2b0505], goliath:[0x4a463b,0xff6818],
+      miniboss:[0x42145f,0xc15dff], warlock:[0x2a1030,0xff8a2a], hound:[0x1c1210,0x8a2f1a],
+    };
+    const cols=palettes[type]||palettes.grunt;
+    const count=type==='goliath'||type==='miniboss'?12:type==='spectre'?7:9;
+    for (let i=0;i<count;i++) {
+      const size=(type==='goliath'?0.075:0.052)+Math.random()*0.025;
+      const m=new THREE.Mesh(
+        new THREE.BoxGeometry(size,size*(0.7+Math.random()*0.6),size),
+        new THREE.MeshBasicMaterial({color:cols[i%cols.length],transparent:true,opacity:type==='spectre'?0.72:1})
+      );
+      m.position.copy(pos);
+      const v=new THREE.Vector3((Math.random()-0.5)*3.5,Math.random()*2.8+0.4,(Math.random()-0.5)*3.5);
+      scene.add(m);
+      gibs.push({m,v,t:0,life:0.5+Math.random()*0.4});
+    }
+  }
+
+  // Decor collision heights.
+  //
+  // A jump peaks at JUMP_VELOCITY^2/(2*JUMP_GRAVITY) ~= 0.91 units. JUMP_MAX_Y is a
+  // headroom clamp, NOT the apex -- nothing ever reaches 1.6. canMoveTo lets you
+  // pass a collider once your jump is within 0.16 of its walkTop, so in practice
+  // ~1.06 is the tallest prop a player can get over or onto, and anything above
+  // that is a wall as far as movement is concerned.
+  //
+  // `h` therefore defaults to deliberately-unsurmountable. Any prop meant to be
+  // stepped over MUST pass its real height: a 0.7-unit gargoyle bust that inherits
+  // the default reads to the player as an invisible wall in the middle of a room.
+  function addCircleCollider(x,z,r,h=1.8,walkTop=h) {
+    decorColliders.push({type:'circle',x,z,r,h,walkTop});
+  }
+
+  function addBoxCollider(x,z,w,d,rot=0,pad=0,h=1.8,walkTop=h) {
+    const quarter=Math.round(rot/(Math.PI/2));
+    const swap=Math.abs(quarter)%2===1;
+    const hw=(swap?d:w)/2 + pad;
+    const hd=(swap?w:d)/2 + pad;
+    decorColliders.push({type:'box',x,z,hw,hd,h,walkTop});
+  }
+
+  function applyPlayerDamage(rawDamage) {
+    const damage=Math.max(1,rawDamage);
+    const absorbed=Math.round(damage*ARMOR_ABSORB[player.armorTier]);
+    player.health=Math.max(0,player.health-Math.max(1,damage-absorbed));
+    player.dmgTimer=0.28;
+    sfx.hurt(); setTimeout(()=>{hFlash.style.opacity='0';},95);
+    shake.hT=0.13; shake.hS=0.055;
+    if (player.health<=0) setGameState('gameover');
+  }
+
+  function spawnEnemySpell(enemy) {
+    const origin=new THREE.Vector3(enemy.position.x, enemy.position.y+0.35, enemy.position.z);
+    const target=new THREE.Vector3(player.x, CAM_Y-0.08, player.z);
+    const dir=target.sub(origin).normalize();
+    const g=new THREE.Group();
+    const core=new THREE.Mesh(
+      new THREE.SphereGeometry(0.12,9,8),
+      new THREE.MeshStandardMaterial({color:0xff6611,emissive:0xff3300,emissiveIntensity:1.4,roughness:0.15,metalness:0.25})
+    );
+    const shell=new THREE.Mesh(
+      new THREE.SphereGeometry(0.2,8,7),
+      new THREE.MeshBasicMaterial({color:0xffaa33,transparent:true,opacity:0.2,side:THREE.BackSide})
+    );
+    const glow=new THREE.PointLight(0xff5511,0.75 * LIGHT_SOURCE_BOOST,2.8,2);
+    g.add(core,shell,glow);
+    g.position.copy(origin);
+    scene.add(g);
+    registerTransientLight(glow);
+    enemySpells.push({mesh:g,vel:dir.multiplyScalar(5.8),life:3.1,damage:Math.max(10,Math.round(enemy.userData.dmg*0.65))});
+  }
+
+  function updateEnemySpells(dt,elapsed) {
+    for(let i=enemySpells.length-1;i>=0;i--){
+      const s=enemySpells[i];
+      s.life-=dt;
+      s.mesh.position.addScaledVector(s.vel,dt);
+      s.mesh.rotation.y+=dt*5.4;
+      s.mesh.position.y+=Math.sin(elapsed*10+i)*0.002;
+      const hitPlayer=Math.hypot(s.mesh.position.x-player.x,s.mesh.position.z-player.z)<0.42 && Math.abs(s.mesh.position.y-CAM_Y)<0.65;
+      if(hitPlayer){
+        if (player.health>0) { sfx.spellHit(); applyPlayerDamage(s.damage); }
+        disposeTransientObject(s.mesh); enemySpells.splice(i,1);
+        continue;
+      }
+      const decorBlock=decorHeightAt(s.mesh.position.x,s.mesh.position.z,0.08);
+      if(s.life<=0||isWallAt(s.mesh.position.x,s.mesh.position.z)||decorBlock>=s.mesh.position.y-0.08){
+        disposeTransientObject(s.mesh); enemySpells.splice(i,1);
+      }
+    }
+  }
+  function updateGibs(dt) {
+    for (let i=gibs.length-1;i>=0;i--) {
+      const g=gibs[i]; g.t+=dt; g.v.y-=9*dt;
+      g.m.position.addScaledVector(g.v,dt);
+      g.m.material.opacity=Math.max(0,1-g.t/g.life);
+      if (g.t>=g.life) { scene.remove(g.m); g.m.geometry.dispose(); g.m.material.dispose(); gibs.splice(i,1); }
+    }
+  }
+
+  // ── Arrows ───────────────────────────────────────────────────────────────────
+  function spawnArrow(off,aimDistance=8){
+    const T=Math.min(player.gunTier,6);
+    if (!arrowVisualCache[T]) {
+      const shaftCols=[0xa07828,0x6a3810,0xc0b880,0x160228,0x1c0402,0x3aa1ff,0x8c74ff];
+      const headCols =[0x909090,0x686868,0xa8a070,0xaa44ff,0xff6600,0xa8e8ff,0xd4b4ff];
+      const shaftGeo=new THREE.CylinderGeometry(0.013,0.013,0.65,5);
+      const tipGeo=new THREE.ConeGeometry(0.032,0.13,4);
+      const fletchGeo=new THREE.PlaneGeometry(0.16,0.055);
+      const shaftMat=new THREE.MeshStandardMaterial({color:shaftCols[T],roughness:0.82});
+      const headMat=new THREE.MeshStandardMaterial({color:headCols[T],roughness:0.28,metalness:0.65,
+        ...(T===3?{emissive:0x5500bb,emissiveIntensity:1.0}:T===4?{emissive:0xff2200,emissiveIntensity:1.4}:{})
+      });
+      const fletchMat=new THREE.MeshBasicMaterial({color:T>=3?headCols[T]:0x993322,side:THREE.DoubleSide});
+      const group=new THREE.Group();
+      const shaft=new THREE.Mesh(shaftGeo,shaftMat); shaft.rotation.z=Math.PI/2; group.add(shaft);
+      const tip=new THREE.Mesh(tipGeo,headMat); tip.rotation.z=-Math.PI/2; tip.position.x=0.40; group.add(tip);
+      [0,Math.PI*2/3,Math.PI*4/3].forEach(ang=>{
+        const f=new THREE.Mesh(fletchGeo,fletchMat); f.position.x=-0.25; f.rotation.x=ang; group.add(f);
+      });
+      arrowVisualCache[T]={group,shaftGeo,tipGeo,fletchGeo,shaftMat,headMat,fletchMat};
+    }
+    const ag=arrowVisualCache[T].group.clone(true);
+    ag.renderOrder=7;
+    ag.frustumCulled=false;
+    ag.traverse(child=>{if(child.isMesh) { child.renderOrder=7; child.frustumCulled=false; }});
+    // Direction
+    const camDir=new THREE.Vector3(); camera.getWorldDirection(camDir);
+    const camRight=new THREE.Vector3().crossVectors(camDir,new THREE.Vector3(0,1,0)).normalize();
+    const camUp=new THREE.Vector3().crossVectors(camDir,camRight).normalize();
+    const arrowOrigin=new THREE.Vector3();
+    crossbowMuzzle.getWorldPosition(arrowOrigin);
+    clampArrowOrigin(arrowOrigin);
+    const aimPoint=camera.position.clone()
+      .addScaledVector(camDir,aimDistance)
+      .addScaledVector(camRight,off.x*3)
+      .addScaledVector(camUp,off.y*3);
+    const fwd=aimPoint.sub(arrowOrigin).normalize();
+    // Orient arrow along flight
+    const xAxis=new THREE.Vector3(1,0,0);
+    if(Math.abs(xAxis.dot(fwd))<0.9999) ag.quaternion.setFromUnitVectors(xAxis,fwd);
+    ag.position.copy(arrowOrigin).addScaledVector(fwd,0.04);
+    scene.add(ag);
+    const arrow={mesh:ag,vel:fwd.clone().multiplyScalar(ARROW_SPEED),life:ARROW_LIFE,hitLife:0.55,hit:false,damage:ARROW_DMG[T]};
+    arrows.push(arrow);
+    if(arrows.length>72){
+      const old=arrows.shift();
+      scene.remove(old.mesh);
+    }
+    return arrow;
+  }
+
+  function findArrowHit(ray, killed){
+    let best=null, bestDist=Infinity;
+    const origin=ray.ray.origin, dir=ray.ray.direction;
+    for(const e of enemies){
+      if(!e.userData.alive||killed.has(e)) continue;
+      const d=e.userData;
+      const dx=e.position.x-origin.x, dy=(d.baseY-0.12)-origin.y, dz=e.position.z-origin.z;
+      const along=dx*dir.x+dy*dir.y+dz*dir.z;
+      if(along<=0||along>=bestDist||along>ray.far) continue;
+      const cx=origin.x+dir.x*along-e.position.x, cy=origin.y+dir.y*along-(d.baseY-0.12), cz=origin.z+dir.z*along-e.position.z;
+      const rx=Math.max(0.38,d.bsx*0.52), ry=Math.max(0.52,d.bsy*0.56);
+      if((cx*cx+cz*cz)/(rx*rx)+(cy*cy)/(ry*ry)<=1&&hasLOS(origin.x,origin.z,e.position.x,e.position.z)){
+        best=e;
+        bestDist=along;
+      }
+    }
+    return best;
+  }
+
+  function updateArrows(dt){
+    for(let i=arrows.length-1;i>=0;i--){
+      const a=arrows[i];
+      if(a.hit){
+        if(a.stuckTarget){
+          if(!a.stuckTarget.userData.alive) a.hitLife=Math.min(a.hitLife,0.12);
+          else if(a.stuckOffset){
+            const stuckPos=a.stuckTarget.localToWorld(a.stuckOffset.clone());
+            a.mesh.position.copy(stuckPos);
+            if(a.stuckQuat) a.mesh.quaternion.copy(a.stuckTarget.quaternion).multiply(a.stuckQuat);
+          }
+        }
+        if(Number.isFinite(a.hitLife)) a.hitLife-=dt;
+        if(a.hitLife<=0){ scene.remove(a.mesh); arrows.splice(i,1); }
+        continue;
+      }
+      if(a.expectedTarget&&!a.expectedTarget.userData.alive){
+        a.hit=true; a.hitLife=0.08; a.vel.set(0,0,0);
+        continue;
+      }
+      const from=a.mesh.position.clone();
+      const vx=a.vel.x*dt, vy=a.vel.y*dt, vz=a.vel.z*dt;
+      const toX=from.x+vx, toY=from.y+vy, toZ=from.z+vz;
+      const speed=Math.max(0.0001,Math.hypot(a.vel.x,a.vel.y,a.vel.z));
+      const dirX=a.vel.x/speed, dirY=a.vel.y/speed, dirZ=a.vel.z/speed;
+      let hitEnemy=null, hitT=Infinity;
+      for(const e of enemies){
+        const d=e.userData;
+        if(!d.alive) continue;
+        const targetY=d.baseY-0.12;
+        const rx=Math.max(0.38,d.bsx*0.52), ry=Math.max(0.52,d.bsy*0.56);
+        const len2=vx*vx+vy*vy+vz*vz;
+        const ax=vx/rx, ay=vy/ry, az=vz/rx;
+        const bx=(from.x-e.position.x)/rx, by=(from.y-targetY)/ry, bz=(from.z-e.position.z)/rx;
+        const qa=ax*ax+ay*ay+az*az;
+        const qb=2*(ax*bx+ay*by+az*bz);
+        const qc=bx*bx+by*by+bz*bz-1;
+        const disc=qb*qb-4*qa*qc;
+        let u=Infinity;
+        if(disc>=0&&qa>0){
+          const root=Math.sqrt(disc);
+          const first=(-qb-root)/(2*qa), second=(-qb+root)/(2*qa);
+          if(first>=0&&first<=1) u=first;
+          else if(second>=0&&second<=1) u=second;
+        }
+        if(u<hitT&&hasLOS(from.x,from.z,e.position.x,e.position.z)){hitEnemy=e;hitT=u;}
+      }
+      if(hitEnemy){
+        // Put the arrow just past the enemy's front surface. Its tip and part
+        // of the shaft should be visibly buried instead of hovering outside.
+        const penetration=0.12;
+        a.mesh.position.set(from.x+vx*hitT+dirX*penetration,from.y+vy*hitT+dirY*penetration,from.z+vz*hitT+dirZ*penetration);
+        a.hit=true; a.stuckTarget=hitEnemy; a.hitLife=Infinity; a.vel.set(0,0,0);
+        a.stuckOffset=hitEnemy.worldToLocal(a.mesh.position.clone());
+        a.stuckQuat=hitEnemy.quaternion.clone().invert().multiply(a.mesh.quaternion);
+        continue;
+      }
+      a.mesh.position.set(toX,toY,toZ);
+      a.life-=dt;
+      if(isWallAt(a.mesh.position.x,a.mesh.position.z)||a.life<=0){ a.hit=true; a.vel.set(0,0,0); }
+    }
+  }
+
+
+  function updatePendingDamage(dt){
+    for(let i=pendingDamage.length-1;i>=0;i--){
+      const hit=pendingDamage[i];
+      hit.time-=dt;
+      if(hit.time>0) continue;
+      if(hit.enemy.userData.alive) damageEnemy(hit.enemy,hit.damage);
+      pendingDamage.splice(i,1);
+    }
+  }
+  // ── Torches ──────────────────────────────────────────────────────────────────
+  function addTorches(keyChamberCells) {
+    const dirs=[{dx:1,dz:0},{dx:-1,dz:0},{dx:0,dz:1},{dx:0,dz:-1}];
+    const wallFlameGeo=new THREE.LatheGeometry([
+      new THREE.Vector2(0.004,0),new THREE.Vector2(0.032,0.018),
+      new THREE.Vector2(0.072,0.07),new THREE.Vector2(0.062,0.135),
+      new THREE.Vector2(0.038,0.20),new THREE.Vector2(0.012,0.255),new THREE.Vector2(0,0.29)
+    ],7);
+    const wallCoreGeo=new THREE.LatheGeometry([
+      new THREE.Vector2(0.002,0),new THREE.Vector2(0.022,0.018),
+      new THREE.Vector2(0.037,0.065),new THREE.Vector2(0.022,0.12),new THREE.Vector2(0,0.17)
+    ],6);
+    const wallFlameMat=new THREE.MeshBasicMaterial({color:0xff9933,transparent:true,opacity:0.92});
+    const wallCoreMat=new THREE.MeshBasicMaterial({color:0xffedaa,transparent:true,opacity:0.88,side:THREE.DoubleSide});
+
+    // Collect wall faces, then split them into straight architectural runs.
+    const candidates=[];
+    for (let z=1;z<worldH-1;z++) for (let x=1;x<worldW-1;x++) {
+      if (!isSolid(currentMap[z][x])) continue;
+      for (const d of dirs) {
+        const nx=x+d.dx,nz=z+d.dz;
+        if (nx<0||nz<0||nx>=worldW||nz>=worldH) continue;
+        if (isSolid(currentMap[nz][nx])) continue;
+        // Skip if adjacent to key chamber
+        if (keyChamberCells&&keyChamberCells.has(`${nx},${nz}`)) continue;
+        const trim=wallClearanceAt(x,z);
+        const wx=(x+0.5)+trim.ox+d.dx*trim.sx*0.5+d.dx*0.02;
+        const wz=(z+0.5)+trim.oz+d.dz*trim.sz*0.5+d.dz*0.02;
+        candidates.push({wx,wz,dx:d.dx,dz:d.dz,t:d.dx?z:x,key:d.dx?`v:${x}:${d.dx}`:`h:${z}:${d.dz}`});
+      }
+    }
+
+    const runs=new Map();
+    for(const c of candidates){if(!runs.has(c.key))runs.set(c.key,[]);runs.get(c.key).push(c);}
+    const anchors=[];
+    for(const line of runs.values()) {
+      line.sort((a,b)=>a.t-b.t);
+      let start=0;
+      for(let i=1;i<=line.length;i++) {
+        if(i<line.length&&line[i].t-line[i-1].t<=1.01) continue;
+        const run=line.slice(start,i), len=run.length;
+        if(len>=2) {
+          const count=Math.min(3,Math.max(1,Math.floor((len+1)/5)));
+          for(let n=0;n<count;n++) {
+            const at=Math.min(len-1,Math.max(0,Math.round((n+1)*len/(count+1)-0.5)));
+            anchors.push({...run[at],runLength:len});
+          }
+        }
+        start=i;
+      }
+    }
+
+    // Farthest-point selection gives every wing coverage while keeping each run symmetrical.
+    let spawn={x:1.5,z:1.5};
+    for(let z=0;z<worldH;z++)for(let x=0;x<worldW;x++)if(currentMap[z][x]===2)spawn={x:x+0.5,z:z+0.5};
+    const chosen=[];
+    const pool=[...anchors];
+    const target=Math.min(28,Math.max(12,Math.ceil((worldW+worldH)/3.8)));
+    while(pool.length&&chosen.length<target) {
+      let best=0,bestScore=-Infinity;
+      for(let i=0;i<pool.length;i++) {
+        const c=pool[i];
+        const spacing=chosen.length?Math.min(...chosen.map(p=>Math.hypot(p.wx-c.wx,p.wz-c.wz))):Math.hypot(c.wx-spawn.x,c.wz-spawn.z)*-1;
+        const score=spacing+c.runLength*0.08;
+        if(score>bestScore){bestScore=score;best=i;}
+      }
+      const c=pool.splice(best,1)[0];
+      if(chosen.every(p=>Math.hypot(p.wx-c.wx,p.wz-c.wz)>=3.25))chosen.push(c);
+    }
+
+    // Build each torch
+    const mountMat=new THREE.MeshStandardMaterial({color:0x4a3a2a,roughness:0.85,metalness:0.5});
+    chosen.forEach(c=>{
+      const mt=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.36,0.06),mountMat);
+      // The bracket sits directly under the torch's own light; letting it cast
+      // paints a hard shadow wedge across the wall.
+      mt.userData.noCastShadow=true;
+      mt.position.set(c.wx,0.8,c.wz); levelRoot.add(mt);
+      const fl=new THREE.Mesh(
+        wallFlameGeo,wallFlameMat
+      );
+      fl.position.set(c.wx,0.98,c.wz); levelRoot.add(fl);
+      const core=new THREE.Mesh(wallCoreGeo,wallCoreMat);
+      core.position.set(c.wx,0.99,c.wz-0.012); levelRoot.add(core);
+      const aura=addGlowSprite(levelRoot,0xff7a2c,0.9,c.wx,1.12,c.wz,0.3);
+      const light=new THREE.PointLight(0xff8844,1.2 * LIGHT_SOURCE_BOOST,9,1.4);
+      // Hold the light clear of the wall face: closer than the shadow camera's
+      // near plane (0.12) the wall clips out of the shadow map, leaving a hard
+      // diagonal cutoff along the cube-face seam.
+      light.position.set(c.wx+c.dx*0.14,1.14,c.wz+c.dz*0.14); levelRoot.add(light);
+      const embers=[];
+      for (let j=0;j<5;j++) {
+        const em=new THREE.Mesh(
+          new THREE.SphereGeometry(0.028,5,4),
+          new THREE.MeshBasicMaterial({color:0xff6611,transparent:true,opacity:0.85})
+        );
+        em.position.set(c.wx,1.12,c.wz); levelRoot.add(em);
+        embers.push({m:em,bx:c.wx,by:1.12,bz:c.wz,age:Math.random(),life:0.7+Math.random()*0.6,ph:Math.random()*Math.PI*2,lat:0.05+Math.random()*0.045,rise:0.26+Math.random()*0.24});
+      }
+      // Wall-hugging lights never cast: the wall crosses their shadow cube's
+      // face boundary at a grazing angle, which draws a seam line that crawls
+      // across the wall as the player moves.
+      torches.push({light,flame:fl,core,aura,embers,noShadow:true,ph:Math.random()*Math.PI*2,pulse:0.18+Math.random()*0.12,bi:0.65});
+    });
+    updateTorchLightBudget();
+  }
+
+  // Shadow setup for a light promoted to a caster. Re-runs when the shadow-quality
+  // setting changes: a light's map resolution is baked into an allocated shadow map,
+  // so we dispose the old map and reset mapSize for the new size to take effect live.
+  function configLightShadow(light){
+    if (!light.shadow) return;
+    const q=settings.shadowQuality||2;
+    if (light._shadowQ===q) return;           // already configured at this quality
+    if (light.shadow.map){ light.shadow.map.dispose(); light.shadow.map=null; }
+    const res=q>=3?1024:q>=2?512:256;
+    light.shadow.mapSize.set(res,res);
+    light.shadow.bias=-0.0025;
+    light.shadow.normalBias=0.09;
+    if (light.shadow.camera){
+      light.shadow.camera.near=0.12;
+      light.shadow.camera.far=Math.min(Math.max(6,light.distance||14),22);
+      light.shadow.camera.updateProjectionMatrix?.();
+    }
+    light._shadowQ=q;
+  }
+  function updateTorchLightBudget() {
+    const sources=[...torches,...fireLights,...fixtureLights,...transientLights].filter(v=>v.light);
+    const worldPos=new THREE.Vector3();
+    const nearest=sources
+      .map((src,index)=>{src.light.getWorldPosition(worldPos);return{index,d2:(worldPos.x-player.x)**2+(worldPos.z-player.z)**2};})
+      .sort((a,b)=>a.d2-b.d2);
+    const visibleCount=Math.min(TORCH_LIGHT_BUDGET,nearest.length);
+    const visible=new Set(nearest.slice(0,visibleCount).map(v=>v.index));
+    // Only the very nearest lit torches also cast real shadows. Transient
+    // glows (pickups, spells, gates) never do: promoting one would allocate a
+    // shadow map for a light that may vanish moments later.
+    const shadowOn=renderer.shadowMap.enabled&&TORCH_SHADOW_BUDGET>0;
+    const shadowCount=shadowOn?Math.min(TORCH_SHADOW_BUDGET,visibleCount):0;
+    const shadowCasters=new Set(
+      nearest.slice(0,visibleCount).filter(v=>{const s=sources[v.index];return !s.transient&&!s.noShadow;}).slice(0,shadowCount).map(v=>v.index));
+    sources.forEach((src,index)=>{
+      const vis=visible.has(index);
+      src.light.visible=vis;
+      const cast=vis&&shadowCasters.has(index);
+      if (cast) configLightShadow(src.light);
+      // Demoting a caster used to flip castShadow off and leave its cube shadow
+      // map allocated until clearLevel. These are PointLights, so that is six
+      // faces at the configured resolution per stale light -- and walking a level
+      // rotates dozens of torches through the small caster budget, so the waste
+      // accumulated for as long as the level lasted. Free it on the way out.
+      if (src.light.castShadow&&!cast&&src.light.shadow&&src.light.shadow.map) {
+        src.light.shadow.map.dispose();
+        src.light.shadow.map=null;
+        src.light._shadowQ=undefined;   // force a reconfigure if it is promoted again
+      }
+      if (src.light.castShadow!==cast) src.light.castShadow=cast;
+    });
+  }
+
+  // Short-lived glows (pickup auras, enemy fireballs, gate lights) must go
+  // through the light budget rather than toggling scene lights directly:
+  // the renderer rebuilds every material's shader program whenever the number
+  // of visible lights changes, which lands as a one-frame hitch. Registering
+  // keeps the visible count pinned at the budget; the immediate re-budget on
+  // register/unregister fills or frees a slot in the same frame.
+  function registerTransientLight(light){
+    if(!light) return;
+    light.visible=false;
+    transientLights.push({light,transient:true});
+    updateTorchLightBudget();
+  }
+  function unregisterTransientLights(root){
+    let removed=false;
+    root.traverse(o=>{
+      if(!o.isPointLight) return;
+      const i=transientLights.findIndex(s=>s.light===o);
+      if(i>=0){ transientLights.splice(i,1); removed=true; }
+    });
+    if(removed) updateTorchLightBudget();
+  }
+
+  function addFireplaces(fps) {
+    fps.forEach(f=>{
+      // Same charred lining as the wall hearths, so the hand-authored braziers
+      // sit in the same material world as the generated ones.
+      const base=new THREE.Mesh(new THREE.BoxGeometry(0.58,0.18,0.58),new THREE.MeshStandardMaterial({map:hearthStoneTex,color:0x4a453f,roughness:0.92,metalness:0.06}));
+      base.position.set(f.x,0.09,f.z); levelRoot.add(base);
+      const rim=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.28,0.08,6),new THREE.MeshStandardMaterial({color:0x2a2020,roughness:0.85,metalness:0.4}));
+      rim.position.set(f.x,0.2,f.z); levelRoot.add(rim);
+      const coals=new THREE.Mesh(new THREE.CylinderGeometry(0.26,0.24,0.05,6),new THREE.MeshStandardMaterial({map:hearthSootTex,color:0xa89c90,roughness:0.98,metalness:0}));
+      coals.position.set(f.x,0.25,f.z); levelRoot.add(coals);
+      const fl=new THREE.Mesh(new THREE.SphereGeometry(0.22,10,8),new THREE.MeshBasicMaterial({color:0xff7722,transparent:true,opacity:0.9}));
+      fl.position.set(f.x,0.42,f.z); levelRoot.add(fl);
+      const aura=addGlowSprite(levelRoot,0xff5d1f,1.5,f.x,0.48,f.z,0.34);
+      const light=new THREE.PointLight(0xff6633,1.7 * LIGHT_SOURCE_BOOST,10,1.8);
+      light.position.set(f.x,0.48,f.z); levelRoot.add(light);
+      fireLights.push({light,flame:fl,aura,ph:Math.random()*Math.PI*2,pulse:0.28,bi:1.2});
+    });
+  }
+
+  function addDampAtmosphere() {
+    const rng=n=>{const x=Math.sin(currentLevel*181.3+n*97.7+2.9)*43758.5453;return x-Math.floor(x);};
+    let spawnX=1.5, spawnZ=1.5, exitX=levelExit.x, exitZ=levelExit.z;
+    for(let z=0;z<worldH;z++) for(let x=0;x<worldW;x++) {
+      if(currentMap[z][x]===2) { spawnX=x+0.5; spawnZ=z+0.5; }
+      if(currentMap[z][x]===3) { exitX=x+0.5; exitZ=z+0.5; }
+    }
+
+    const dripGeo=new THREE.SphereGeometry(0.022,6,5);
+    const splashGeo=new THREE.RingGeometry(0.014,0.05,8);
+    const dripMat=new THREE.MeshBasicMaterial({color:0x88b8d8,transparent:true,opacity:0.84});
+    const splashMat=new THREE.MeshBasicMaterial({color:0x6ea4c8,transparent:true,opacity:0,side:THREE.DoubleSide});
+    const floorCells=[];
+    for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
+      if (isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      const px=x+0.5, pz=z+0.5;
+      if (Math.hypot(px-spawnX,pz-spawnZ)<3.2||Math.hypot(px-exitX,pz-exitZ)<2.4) continue;
+      if (rng(x*71+z*53+900)<0.88) continue;
+      floorCells.push({x:px+(rng(x*19+z*11)-0.5)*0.32,z:pz+(rng(x*23+z*13)-0.5)*0.32});
+    }
+    sShuf(floorCells,currentLevel*59+17);
+    const dripCount=Math.min(52, floorCells.length);
+    for(let i=0;i<dripCount;i++) {
+      const c=floorCells[i];
+      const topY=WALL_H-0.08-rng(i*37+1200)*0.18;
+      const drip=new THREE.Mesh(dripGeo,dripMat.clone());
+      drip.position.set(c.x,topY,c.z);
+      levelRoot.add(drip);
+      const splash=new THREE.Mesh(splashGeo,splashMat.clone());
+      splash.rotation.x=-Math.PI/2;
+      splash.position.set(c.x,0.012,c.z);
+      splash.scale.setScalar(0.5);
+      levelRoot.add(splash);
+      ceilingDrips.push({
+        mesh:drip,
+        splash,
+        topY,
+        y:topY,
+        speed:2.0+rng(i*41+1300)*1.5,
+        wait:rng(i*17+1400)*1.1,
+        splashT:0,
+      });
+    }
+
+    // Shallow standing water catches torchlight beneath the active ceiling leaks.
+    const puddleCount=Math.min(22,floorCells.length);
+    if(puddleCount>0) {
+      const puddles=new THREE.InstancedMesh(
+        new THREE.CircleGeometry(1,14),
+        new THREE.MeshStandardMaterial({color:0x263733,roughness:0.46,metalness:0,transparent:true,opacity:0.22,depthWrite:false}),
+        puddleCount
+      );
+      const dummy=new THREE.Object3D();
+      for(let i=0;i<puddleCount;i++) {
+        const c=floorCells[i], sx=0.18+rng(i*47+1500)*0.28, sz=sx*(0.55+rng(i*53+1510)*0.5);
+        dummy.position.set(c.x,0.009,c.z); dummy.rotation.set(-Math.PI/2,0,rng(i*59+1520)*Math.PI);
+        dummy.scale.set(sx,sz,1); dummy.updateMatrix(); puddles.setMatrixAt(i,dummy.matrix);
+      }
+      puddles.instanceMatrix.needsUpdate=true; puddles.renderOrder=1; levelRoot.add(puddles);
+    }
+
+    const mossFaces=[];
+    const dirs=[{dx:-1,dz:0},{dx:1,dz:0},{dx:0,dz:-1},{dx:0,dz:1}];
+    for(let z=1;z<worldH-1;z++) for(let x=1;x<worldW-1;x++) {
+      if(!isSolid(currentMap[z][x])) continue;
+      for (const d of dirs) {
+        const nx=x+d.dx,nz=z+d.dz;
+        if (isSolid(currentMap[nz][nx])) continue;
+        const px=nx+0.5,pz=nz+0.5;
+        if (Math.hypot(px-spawnX,pz-spawnZ)<2.8||Math.hypot(px-exitX,pz-exitZ)<2.0) continue;
+        if (rng(x*131+z*97+d.dx*17+d.dz*31+1700)<0.62) continue;
+        mossFaces.push({x,z,dx:d.dx,dz:d.dz});
+      }
+    }
+    sShuf(mossFaces,currentLevel*67+27);
+    const wetCount=Math.min(80,mossFaces.length);
+    if(wetCount>0) {
+      const streaks=new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(1,1),
+        new THREE.MeshBasicMaterial({map:wetStreakTex,color:0xa6d2c8,transparent:true,opacity:0.46,depthWrite:false,side:THREE.DoubleSide}),
+        wetCount
+      );
+      const dummy=new THREE.Object3D();
+      for(let i=0;i<wetCount;i++) {
+        const m=mossFaces[i], h=0.8+rng(i*17+1800)*1.8, w=0.25+rng(i*19+1810)*0.42;
+        const rot=m.dz===1?0:m.dz===-1?Math.PI:m.dx===1?-Math.PI/2:Math.PI/2;
+        const trim=wallClearanceAt(m.x,m.z);
+        dummy.position.set((m.x+0.5)+trim.ox+m.dx*trim.sx*0.5+m.dx*0.001,WALL_H-h*0.5-rng(i*23+1820)*0.28,(m.z+0.5)+trim.oz+m.dz*trim.sz*0.5+m.dz*0.001);
+        dummy.rotation.set(0,rot,0); dummy.scale.set(w,h,1); dummy.updateMatrix(); streaks.setMatrixAt(i,dummy.matrix);
+      }
+      streaks.instanceMatrix.needsUpdate=true; streaks.renderOrder=1; levelRoot.add(streaks);
+    }
+    const mossCount=Math.min(105,mossFaces.length);
+    const mossGeo=new THREE.PlaneGeometry(1,1);
+    for(let i=0;i<mossCount;i++) {
+      const m=mossFaces[i];
+      const len=0.5+rng(i*13+1900)*1.35;
+      const wid=0.18+rng(i*23+2000)*0.34;
+      const mat=new THREE.MeshStandardMaterial({
+        map:mossPatchTex,
+        color:0x6c9655,
+        emissive:0x10220d,
+        emissiveIntensity:0.12,
+        roughness:0.88,
+        metalness:0,
+        transparent:true,
+        opacity:0.72+rng(i*29+2100)*0.2,
+        alphaTest:0.08,
+        side:THREE.DoubleSide,
+      });
+      const mesh=new THREE.Mesh(mossGeo,mat);
+      const trim=wallClearanceAt(m.x,m.z);
+      const wx=(m.x+0.5)+trim.ox+m.dx*trim.sx*0.5+m.dx*0.004;
+      const wz=(m.z+0.5)+trim.oz+m.dz*trim.sz*0.5+m.dz*0.004;
+      const baseY=WALL_H-0.08-len*0.5-rng(i*31+2200)*0.12;
+      const rot=m.dz===1?0:m.dz===-1?Math.PI:m.dx===1?-Math.PI/2:Math.PI/2;
+      mesh.position.set(wx,baseY,wz);
+      mesh.scale.set(wid,len,1);
+      mesh.rotation.y=rot;
+      mesh.rotation.z=(rng(i*7+2300)-0.5)*0.18;
+      levelRoot.add(mesh);
+      mossStrands.push({mesh,baseRz:mesh.rotation.z,phase:rng(i*11+2400)*Math.PI*2,amp:0.02+rng(i*5+2500)*0.03,baseOpacity:mat.opacity});
+    }
+  }
+
+  function addGroundClutter() {
+    const rng=n=>{const x=Math.sin(currentLevel*233.7+n*91.13+4.2)*43758.5453;return x-Math.floor(x);};
+    let spawnX=1.5,spawnZ=1.5,exitX=levelExit.x,exitZ=levelExit.z;
+    for(let z=0;z<worldH;z++) for(let x=0;x<worldW;x++){
+      if(currentMap[z][x]===2){spawnX=x+0.5;spawnZ=z+0.5;}
+      if(currentMap[z][x]===3){exitX=x+0.5;exitZ=z+0.5;}
+    }
+    // Debris obeys the architecture instead of being sprinkled uniformly. The old
+    // pass cluttered 70% of every walkable tile at random, which left no clean
+    // floor anywhere and read as visual noise rather than as a place. Rubble
+    // actually collects along walls and packs into corners, and gets kicked clear
+    // of the open ground people walk over -- so that is where we put it.
+    const solidAt=(x,z)=>isSolid(currentMap[z]?.[x] ?? 1);
+    const rocks=[],splinters=[],bones=[],tufts=[],stains=[];
+    for(let z=1;z<worldH-1;z++) for(let x=1;x<worldW-1;x++){
+      if(isSolid(currentMap[z][x])) continue;
+      const px=x+0.5,pz=z+0.5;
+      if(Math.hypot(px-spawnX,pz-spawnZ)<2.2||Math.hypot(px-exitX,pz-exitZ)<1.6) continue;
+
+      // How enclosed is this tile? Orthogonal walls dominate; diagonals sharpen corners.
+      const orth=[[1,0],[-1,0],[0,1],[0,-1]].filter(([dx,dz])=>solidAt(x+dx,z+dz)).length;
+      const diag=[[1,1],[1,-1],[-1,1],[-1,-1]].filter(([dx,dz])=>solidAt(x+dx,z+dz)).length;
+      const enclosure=orth+diag*0.3;
+      // Open floor stays mostly clear; edges get grubby; corners silt up.
+      const chance=0.04+Math.min(0.60,enclosure*0.24);
+      const roll=rng(x*17+z*31+6000);
+      if(roll>chance) continue;
+
+      // Bias each piece toward whichever wall it settled against.
+      let bx=0,bz=0;
+      for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]) if(solidAt(x+dx,z+dz)){ bx+=dx; bz+=dz; }
+      const blen=Math.hypot(bx,bz)||1;
+      const drift=orth?0.24:0;
+
+      const pieces=1+(orth>=2?1:0)+(orth>=3&&roll<chance*0.35?1:0);
+      for(let j=0;j<pieces;j++){
+        const n=x*101+z*67+j*19;
+        const ox=(rng(n)-0.5)*0.52+(bx/blen)*drift;
+        const oz=(rng(n+1)-0.5)*0.52+(bz/blen)*drift;
+        if(isWallAt(px+ox,pz+oz)) continue;
+        const kind=Math.floor(rng(n+2)*20);
+        const item={x:px+ox,z:pz+oz,r:rng(n+3)*Math.PI*2,s:rng(n+4)};
+        // Stone dominates a stone keep. Moss only creeps in where it is enclosed
+        // and damp, and bloodstains stay rare enough to still mean something.
+        if(kind<8) rocks.push(item);
+        else if(kind<12) splinters.push(item);
+        else if(kind<17) bones.push(item);
+        else if(kind===17&&orth>=2) tufts.push(item);
+        else if(kind>=18&&orth>=1) stains.push(item);
+      }
+    }
+    // Shuffle before the instance caps slice. Items are collected in map scan
+    // order, so truncation would drop whole bands off the bottom of the level
+    // rather than thinning evenly. Current maps stay under the caps, but this
+    // keeps the failure graceful if the density or map size is ever raised.
+    sShuf(rocks,currentLevel*7+11); sShuf(splinters,currentLevel*7+23);
+    sShuf(bones,currentLevel*7+37); sShuf(tufts,currentLevel*7+41); sShuf(stains,currentLevel*7+53);
+
+    const dummy=new THREE.Object3D();
+    const addInstances=(items,geo,mat,limit,write)=>{
+      const count=Math.min(limit,items.length);
+      if(!count) return;
+      const batch=new THREE.InstancedMesh(geo,mat,count);
+      for(let i=0;i<count;i++) write(dummy,items[i],i);
+      batch.instanceMatrix.needsUpdate=true; batch.renderOrder=1; levelRoot.add(batch);
+    };
+    addInstances(rocks,new THREE.IcosahedronGeometry(0.055,0),
+      new THREE.MeshStandardMaterial({color:0x4d5055,roughness:0.96,metalness:0.02}),420,(d,p,i)=>{
+        const s=0.55+p.s*1.15; d.position.set(p.x,0.025,p.z); d.rotation.set(p.s*0.8,p.r,p.s*0.5); d.scale.set(s,0.55+s*0.35,0.8+s*0.3); d.updateMatrix();
+      });
+    addInstances(splinters,new THREE.BoxGeometry(0.16,0.028,0.045),
+      new THREE.MeshStandardMaterial({color:0x6f4529,roughness:0.94,metalness:0}),260,(d,p)=>{
+        d.position.set(p.x,0.018,p.z); d.rotation.set(0,p.r,(p.s-0.5)*0.8); d.scale.set(0.45+p.s*1.3,1,0.7+p.s); d.updateMatrix();
+      });
+    addInstances(bones,new THREE.CylinderGeometry(0.018,0.025,0.18,5),
+      new THREE.MeshStandardMaterial({color:0xb9aa80,roughness:0.88,metalness:0}),220,(d,p)=>{
+        d.position.set(p.x,0.025,p.z); d.rotation.set(0,p.r,Math.PI/2+(p.s-0.5)*0.7); d.scale.set(0.8+p.s*0.7,0.8+p.s*0.7,0.8+p.s*0.7); d.updateMatrix();
+      });
+    // Damp moss, not lawn grass -- desaturated and kept low against the stone.
+    addInstances(tufts,new THREE.ConeGeometry(0.075,0.11,4),
+      new THREE.MeshStandardMaterial({color:0x2e4230,roughness:0.99,metalness:0}),110,(d,p)=>{
+        d.position.set(p.x,0.055,p.z); d.rotation.y=p.r; d.scale.set(0.6+p.s*0.8,0.55+p.s*0.9,0.6+p.s*0.8); d.updateMatrix();
+      });
+    addInstances(stains,new THREE.CircleGeometry(0.15,7),
+      new THREE.MeshBasicMaterial({color:0x321414,transparent:true,opacity:0.40,depthWrite:false}),120,(d,p)=>{
+        d.position.set(p.x,0.006,p.z); d.rotation.set(-Math.PI/2,p.r,0); d.scale.set(0.45+p.s*1.4,0.35+p.s*1.1,1); d.updateMatrix();
+      });
+  }
+
+  // ── Castle decorations ───────────────────────────────────────────────────────
+  function addCastleDecorations() {
+    const rng=n=>{const x=Math.sin(currentLevel*127.1+n*311.7+1.5)*43758.5453;return x-Math.floor(x);};
+    const wallFace=(x,z,rot)=>{
+      const wx=rot===Math.PI/2?x-1:rot===-Math.PI/2?x+1:x;
+      const wz=rot===0?z-1:rot===Math.PI?z+1:z;
+      const nx=x-wx,nz=z-wz,trim=wallClearanceAt(wx,wz);
+      return {x:wx+0.5+trim.ox+nx*trim.sx*0.5+nx*0.04,
+        z:wz+0.5+trim.oz+nz*trim.sz*0.5+nz*0.04,rot};
+    };
+    const spanAt=(x,z,dx,dz)=>{
+      let steps=0, cx=x, cz=z;
+      while(!isSolid(currentMap[cz]?.[cx])){ steps++; cx+=dx; cz+=dz; }
+      return steps-1;
+    };
+    
+    // Find spawn point for buffer zone
+    let spawnX=1.5, spawnZ=1.5;
+    let exitX=levelExit.x, exitZ=levelExit.z;
+    for(let z=0;z<worldH;z++) for(let x=0;x<worldW;x++) {
+      if(currentMap[z][x]===2) { spawnX=x+0.5; spawnZ=z+0.5; }
+      if(currentMap[z][x]===3) { exitX=x+0.5; exitZ=z+0.5; }
+    }
+    const nearDoorFeature=(px,pz,doorRadius=2.2)=>Math.hypot(px-exitX,pz-exitZ)<doorRadius
+      || gates.some(g=>Math.hypot(px-(g.x+0.5),pz-(g.z+0.5))<1.85);
+    
+    // Collect valid decoration spots (actual L-shaped corners, not hallways)
+    const decorCells=[];
+    for(let z=2;z<worldH-2;z+=1) for(let x=2;x<worldW-2;x+=1) {
+      if(!isSolid(currentMap[z][x])&&currentMap[z][x]!==2&&currentMap[z][x]!==3&&currentMap[z][x]!==6) {
+        // Check for L-shaped corner (perpendicular walls, not opposite/hallway)
+        const up=z-1>=0 && isSolid(currentMap[z-1][x]);
+        const down=z+1<worldH && isSolid(currentMap[z+1][x]);
+        const left=x-1>=0 && isSolid(currentMap[z][x-1]);
+        const right=x+1<worldW && isSolid(currentMap[z][x+1]);
+        
+        // L-corner: has perpendicular walls, not straight line
+        const isCorner=(up||down)&&(left||right)&&!(up&&down)&&!(left&&right);
+        
+        if(isCorner) {
+          // Keep buffer zone around spawn (at least 3 units away)
+          const dx=x+0.5-spawnX, dz=z+0.5-spawnZ;
+          const dist=Math.sqrt(dx*dx+dz*dz);
+          const spanX=spanAt(x,z,-1,0)+spanAt(x,z,1,0)+1;
+          const spanZ=spanAt(x,z,0,-1)+spanAt(x,z,0,1)+1;
+          if(dist>=3 && !nearDoorFeature(x+0.5,z+0.5,2.4)) {
+            decorCells.push({x:x+0.5,z:z+0.5,spanX,spanZ,tight:spanX<=3||spanZ<=3});
+          }
+        }
+      }
+    }
+    sShuf(decorCells, currentLevel*37+9);
+
+    // Barrels and crates are used both as corner clutter and to stock the
+    // store rooms below. Their colliders stay low (walkTop under the jump
+    // apex) so the player can always vault them rather than being fenced in.
+    function addBarrel(px,pz,angle){
+      const barrelMat=new THREE.MeshStandardMaterial({color:0x7a5c39,map:woodGrainTex,roughness:0.9,metalness:0.02});
+      const bandMat=new THREE.MeshStandardMaterial({color:0x2c2824,roughness:0.55,metalness:0.72});
+      const barrel=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.24,0.52,10),barrelMat);
+      barrel.position.set(px,0.26,pz); barrel.rotation.y=angle; levelRoot.add(barrel);
+      const belly=new THREE.Mesh(new THREE.CylinderGeometry(0.255,0.255,0.24,10),barrelMat);
+      belly.position.set(px,0.26,pz); belly.rotation.y=angle; levelRoot.add(belly);
+      for(let b=0;b<3;b++) {
+        const r=b===1?0.262:0.23;
+        const band=new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.045,10),bandMat);
+        band.position.set(px,0.09+b*0.17,pz); levelRoot.add(band);
+      }
+      const lid=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.03,10),barrelMat);
+      lid.position.set(px,0.53,pz); levelRoot.add(lid);
+      addCircleCollider(px,pz,0.26,0.56,0.56);
+    }
+    function addCrate(px,pz,angle){
+      const crateGrp=new THREE.Group();
+      const body=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.4,0.4),new THREE.MeshStandardMaterial({color:0x6b4423,map:woodGrainTex,roughness:0.9,metalness:0}));
+      body.position.y=0.2; crateGrp.add(body);
+      const frameMat=new THREE.MeshStandardMaterial({color:0x4d3016,roughness:0.95,metalness:0});
+      for(const cx of [-0.19,0.19]) for(const cz of [-0.19,0.19]){
+        const post=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.42,0.04),frameMat);
+        post.position.set(cx,0.2,cz); crateGrp.add(post);
+      }
+      for(const ry of [0.02,0.38]) for(const axis of [0,1]){
+        const rail=new THREE.Mesh(new THREE.BoxGeometry(axis?0.04:0.42,0.04,axis?0.42:0.04),frameMat);
+        rail.position.set(axis?0.19*(ry>0.2?1:-1):0,ry,axis?0:0.19*(ry>0.2?1:-1)); crateGrp.add(rail);
+      }
+      crateGrp.position.set(px,0,pz); crateGrp.rotation.y=angle; levelRoot.add(crateGrp);
+      addBoxCollider(px,pz,0.42,0.42,angle,0.02,0.42,0.42);
+    }
+
+    const decorCount=Math.min(Math.floor(decorCells.length*0.35), 80);
+    for(let d=0;d<decorCount;d++) {
+      const pos=decorCells[d];
+      const type=Math.floor(rng(d+501)*10);
+      const angle=rng(d+701)*Math.PI*2;
+      const roomy=!pos.tight;
+      
+      if(type===0 && roomy) {
+        // Medieval stone support with a foot, faceted shaft, and capital.
+        const stoneMat=new THREE.MeshStandardMaterial({color:0x69625b,roughness:0.92,metalness:0.02});
+        const trimMat=new THREE.MeshStandardMaterial({color:0x877965,roughness:0.86,metalness:0.03});
+        const base=new THREE.Mesh(new THREE.CylinderGeometry(0.31,0.36,0.14,8),trimMat);
+        const shaft=new THREE.Mesh(new THREE.CylinderGeometry(0.19,0.23,1.58,8),stoneMat);
+        const capital=new THREE.Mesh(new THREE.CylinderGeometry(0.29,0.23,0.14,8),trimMat);
+        base.position.set(pos.x,0.07,pos.z);
+        shaft.position.set(pos.x,0.86,pos.z);
+        capital.position.set(pos.x,1.67,pos.z);
+        base.rotation.y=shaft.rotation.y=capital.rotation.y=angle;
+        levelRoot.add(base,shaft,capital);
+        // A real floor-to-capital column (top ~1.74) — deliberately unsurmountable.
+        addCircleCollider(pos.x,pos.z,0.30,1.8,1.8);
+      } else if(type===1 && roomy) {
+        addBarrel(pos.x,pos.z,angle);
+      } else if(type===2 && roomy) {
+        addCrate(pos.x,pos.z,angle);
+      } else if(type===3 && roomy) {
+        // Stone gargoyle bust on a plinth — grounded, weathered, horned. Was
+        // previously a head floating unsupported at mid-height.
+        const stoneA=new THREE.MeshStandardMaterial({color:0x565663,roughness:0.94,metalness:0.02});
+        const stoneB=new THREE.MeshStandardMaterial({color:0x45454f,roughness:0.9,metalness:0});
+        const plinth=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,0.36,6),stoneA);
+        plinth.position.set(pos.x,0.18,pos.z); plinth.rotation.y=angle; levelRoot.add(plinth);
+        const head=new THREE.Mesh(new THREE.SphereGeometry(0.16,7,6),stoneB);
+        head.position.set(pos.x,0.5,pos.z); levelRoot.add(head);
+        const jaw=new THREE.Mesh(new THREE.BoxGeometry(0.26,0.09,0.16),stoneB);
+        jaw.position.set(pos.x,0.4,pos.z+0.02); levelRoot.add(jaw);
+        const hornMat=new THREE.MeshStandardMaterial({color:0x2c2c36,roughness:0.88});
+        for(const hx of [-0.09,0.09]){
+          const horn=new THREE.Mesh(new THREE.ConeGeometry(0.03,0.13,5),hornMat);
+          horn.position.set(pos.x+hx,0.63,pos.z); horn.rotation.z=hx<0?0.35:-0.35; levelRoot.add(horn);
+        }
+        // Glowing eyes to catch the new bloom.
+        const eyeMat=new THREE.MeshBasicMaterial({color:0xff7a2a});
+        for(const ex of [-0.06,0.06]){
+          const eye=new THREE.Mesh(new THREE.SphereGeometry(0.022,5,4),eyeMat);
+          eye.position.set(pos.x+ex,0.52,pos.z+0.14); levelRoot.add(eye);
+        }
+        // Plinth to horn tips is ~0.70. Without an explicit height this inherited
+        // the 1.8 default and became a knee-high statue you could not step over.
+        addCircleCollider(pos.x,pos.z,0.2,0.7,0.7);
+      } else if(type===4 && roomy) {
+        // Weapon rack — spears leaning on a real A-frame timber rail, tips aligned
+        // to the leaning shafts (they used to float above and off-axis).
+        const rackWood=new THREE.MeshStandardMaterial({color:0x5a3c22,map:woodGrainTex,roughness:0.9,metalness:0.01});
+        const steel=new THREE.MeshStandardMaterial({color:0x565b60,roughness:0.55,metalness:0.72});
+        const edge=new THREE.MeshStandardMaterial({color:0x8a8f96,roughness:0.4,metalness:0.9});
+        const lean=0.3;
+        // Horizontal rail the shafts rest against, plus two feet.
+        const rail=new THREE.Mesh(new THREE.BoxGeometry(0.56,0.05,0.06),rackWood);
+        rail.position.set(pos.x,0.62,pos.z+0.14); rail.rotation.y=0; levelRoot.add(rail);
+        for(const fx of [-0.24,0.24]){
+          const post=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.03,0.66,5),rackWood);
+          post.position.set(pos.x+fx,0.33,pos.z+0.14); levelRoot.add(post);
+        }
+        // Everything leans by +lean, toward the rail at +z. Rotating the shaft by
+        // -lean while placing the tip at +sin(lean) is what threw the spearheads
+        // off: it put each one about a third of a shaft's length past the end and
+        // on the wrong side, and tilted the shafts away from the rail they are
+        // supposed to be resting against.
+        const spearBaseZ=pos.z+0.035;   // close enough that the shafts touch the rail
+        for(let sp=0;sp<3;sp++) {
+          const bx=pos.x-0.18+sp*0.18;
+          const spear=new THREE.Mesh(new THREE.CylinderGeometry(0.026,0.026,0.92,6),steel);
+          spear.position.set(bx,0.46,spearBaseZ); spear.rotation.x=lean; levelRoot.add(spear);
+          const tip=new THREE.Mesh(new THREE.ConeGeometry(0.045,0.16,6),edge);
+          tip.position.set(bx,0.46+Math.cos(lean)*0.54,spearBaseZ+Math.sin(lean)*0.54);
+          tip.rotation.x=lean; levelRoot.add(tip);
+        }
+        // Rail and posts top out at 0.66; the leaning spearheads reach ~1.05 but
+        // are thin enough to brush past. Collide against the rack itself so it can
+        // be vaulted -- inheriting the 1.8 default made it a full-height wall.
+        addBoxCollider(pos.x,pos.z,0.56,0.3,0,0.02,0.7,0.7);
+      } else if(type===6) {
+        // Blood pool on floor
+        const poolGeo=new THREE.CircleGeometry(0.18+rng(d+801)*0.14,8);
+        const pool=new THREE.Mesh(poolGeo,new THREE.MeshBasicMaterial({color:0x4a0808,transparent:true,opacity:0.82}));
+        pool.rotation.x=-Math.PI/2; pool.position.set(pos.x,0.005,pos.z); levelRoot.add(pool);
+        if(rng(d+802)<0.5) {
+          const trail=new THREE.Mesh(new THREE.PlaneGeometry(0.05,0.18+rng(d+803)*0.1),new THREE.MeshBasicMaterial({color:0x3a0606,transparent:true,opacity:0.65}));
+          trail.rotation.x=-Math.PI/2; trail.rotation.z=rng(d+804)*Math.PI;
+          trail.position.set(pos.x+0.1,0.005,pos.z+0.1); levelRoot.add(trail);
+        }
+      } else if(type===7) {
+        // Skull and bone pile
+        const skullGeo=new THREE.SphereGeometry(0.07,5,4);
+        const boneMat2=new THREE.MeshStandardMaterial({color:0xd4c89a,roughness:0.85,metalness:0});
+        for(let s=0;s<2+Math.floor(rng(d+901)*3);s++){
+          const skull=new THREE.Mesh(skullGeo,boneMat2);
+          skull.position.set(pos.x+(rng(d+902+s)-0.5)*0.28,0.07+rng(d+903+s)*0.04,pos.z+(rng(d+904+s)-0.5)*0.28);
+          skull.rotation.set(rng(d+905+s)*Math.PI,rng(d+906+s)*Math.PI*2,0);
+          skull.scale.set(1,0.85+rng(d+907+s)*0.3,0.9); levelRoot.add(skull);
+        }
+        for(let b=0;b<4;b++){
+          const shard=new THREE.Mesh(new THREE.BoxGeometry(0.04+rng(d+910+b)*0.06,0.03,0.015),boneMat2);
+          shard.position.set(pos.x+(rng(d+911+b)-0.5)*0.4,0.015,pos.z+(rng(d+912+b)-0.5)*0.4);
+          shard.rotation.y=rng(d+913+b)*Math.PI*2; levelRoot.add(shard);
+        }
+      } else if(type===8 && roomy) {
+        // Rubble/stone pile
+        const rubMat=new THREE.MeshStandardMaterial({color:0x4a4a52,roughness:0.95,metalness:0.02});
+        for(let rb=0;rb<3+Math.floor(rng(d+1001)*4);rb++){
+          const sz=0.06+rng(d+1002+rb)*0.12;
+          const chunk=new THREE.Mesh(new THREE.BoxGeometry(sz,sz*0.6,sz*0.85),rubMat);
+          chunk.position.set(pos.x+(rng(d+1003+rb)-0.5)*0.35,sz*0.3,pos.z+(rng(d+1004+rb)-0.5)*0.35);
+          chunk.rotation.set(0,rng(d+1005+rb)*Math.PI*2,rng(d+1006+rb)*0.4-0.2); levelRoot.add(chunk);
+        }
+        addCircleCollider(pos.x,pos.z,0.2,0.18,0.18);
+      } else if(type<5||type===8) {
+        // Tight corners get atmosphere only, never blocking props.
+        const stain=new THREE.Mesh(new THREE.CircleGeometry(0.09+rng(d+1200)*0.06,7),new THREE.MeshBasicMaterial({color:0x2b1710,transparent:true,opacity:0.45}));
+        stain.rotation.x=-Math.PI/2; stain.position.set(pos.x,0.004,pos.z); levelRoot.add(stain);
+      } else {
+        // Hanging iron chains
+        const chainMat=new THREE.MeshStandardMaterial({color:0x3a3a3a,roughness:0.75,metalness:0.7});
+        const links=4+Math.floor(rng(d+1101)*4);
+        for(let l=0;l<links;l++){
+          const link=new THREE.Mesh(new THREE.TorusGeometry(0.028,0.008,4,8),chainMat);
+          link.position.set(pos.x+(rng(d+1102+l)-0.5)*0.04,1.6-l*0.12,pos.z+(rng(d+1103+l)-0.5)*0.04);
+          link.rotation.set(l%2===0?0:Math.PI/2,0,0); levelRoot.add(link);
+        }
+        const shackle=new THREE.Mesh(new THREE.TorusGeometry(0.055,0.015,5,10),chainMat);
+        shackle.position.set(pos.x,1.6-links*0.12,pos.z); levelRoot.add(shackle);
+      }
+    }
+
+    const rugMatA=new THREE.MeshStandardMaterial({color:0x6d1620,map:rugWeaveTex,roughness:0.96,metalness:0});
+    const rugMatB=new THREE.MeshStandardMaterial({color:0x24385d,map:rugWeaveTex,roughness:0.96,metalness:0});
+    const rugTrimMat=new THREE.MeshStandardMaterial({color:0xc9a15d,roughness:0.82,metalness:0.08});
+    const woodMat=new THREE.MeshStandardMaterial({color:0x8a5c34,map:woodGrainTex,roughness:0.88,metalness:0.02});
+    const darkWoodMat=new THREE.MeshStandardMaterial({color:0x603921,map:woodGrainTex,roughness:0.9,metalness:0.01});
+    const libraryMats=[0x7e2429,0x34506f,0x6a5429,0x536b51].map(color=>new THREE.MeshStandardMaterial({color,roughness:0.9}));
+    const fabricMat=new THREE.MeshStandardMaterial({color:0x8f7642,map:fabricTex,roughness:0.92,metalness:0});
+    const candleWaxMat=new THREE.MeshStandardMaterial({color:0xe9d9b6,roughness:0.72,metalness:0.02});
+    const brassMat=new THREE.MeshStandardMaterial({color:0x9a7740,roughness:0.46,metalness:0.78});
+
+    const measureOpen=(x,z,dx,dz)=>{
+      let steps=0, cx=x, cz=z;
+      while(!isSolid(currentMap[cz]?.[cx])){ steps++; cx+=dx; cz+=dz; }
+      return steps-1;
+    };
+    const interiorCells=[];
+    for(let z=3;z<worldH-3;z++) for(let x=3;x<worldW-3;x++) {
+      if(isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      let openScore=0;
+      for(let oz=-1;oz<=1;oz++) for(let ox=-1;ox<=1;ox++) if(!isSolid(currentMap[z+oz][x+ox])) openScore++;
+      const px=x+0.5,pz=z+0.5;
+      const nearSpawn=Math.hypot(px-spawnX,pz-spawnZ)<4.5;
+      const nearExit=nearDoorFeature(px,pz,3.2);
+      const nearKey=currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.2);
+      const left=measureOpen(x,z,-1,0), right=measureOpen(x,z,1,0), up=measureOpen(x,z,0,-1), down=measureOpen(x,z,0,1);
+      const spanX=left+right+1, spanZ=up+down+1;
+      if(openScore>=8&&spanX>=4&&spanZ>=4&&Math.min(left,right)>=1&&Math.min(up,down)>=1&&!nearSpawn&&!nearExit&&!nearKey&&!inBossExitRoom(px,pz))
+        interiorCells.push({x:px,z:pz,cellX:x,cellZ:z,left,right,up,down,spanX,spanZ});
+    }
+    sShuf(interiorCells, currentLevel*61+17);
+    const reservedInterior=[];
+    const canUseInterior=(px,pz,r)=>reservedInterior.every(v=>Math.hypot(v.x-px,v.z-pz)>=r);
+    const sideOffset=(rot,forward,lateral=0)=>({x:Math.cos(rot)*forward-Math.sin(rot)*lateral,z:Math.sin(rot)*forward+Math.cos(rot)*lateral});
+
+    function addChair(px,pz,rot,stool=false) {
+      const g=new THREE.Group();
+      const seat=new THREE.Mesh(new THREE.BoxGeometry(stool?0.24:0.32,0.06,stool?0.24:0.28),woodMat);
+      seat.position.y=0.34; g.add(seat);
+      [-1,1].forEach(ix=>[-1,1].forEach(iz=>{
+        const leg=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.34,0.04),darkWoodMat);
+        leg.position.set(ix*(stool?0.085:0.11),0.17,iz*(stool?0.085:0.1)); g.add(leg);
+      }));
+      if(!stool){
+        const back=new THREE.Mesh(new THREE.BoxGeometry(0.32,0.3,0.04),darkWoodMat);
+        back.position.set(0,0.58,-0.12); g.add(back);
+      }
+      g.position.set(px,0,pz); g.rotation.y=rot; levelRoot.add(g);
+      addBoxCollider(px,pz,stool?0.24:0.3,stool?0.24:0.28,rot,0.03,stool?0.5:0.58);
+    }
+
+    function addTable(px,pz,longTable=false,rot=0) {
+      const g=new THREE.Group();
+      const w=longTable?1.28:0.9, d=longTable?0.46:0.68;
+      const top=new THREE.Mesh(new THREE.BoxGeometry(w,0.07,d),woodMat);
+      top.position.y=0.56; g.add(top);
+      [-1,1].forEach(ix=>[-1,1].forEach(iz=>{
+        const leg=new THREE.Mesh(new THREE.BoxGeometry(0.055,0.56,0.055),darkWoodMat);
+        leg.position.set(ix*(w*0.4),0.28,iz*(d*0.34)); g.add(leg);
+      }));
+      const candles=1+(longTable?2:1);
+      for(let i=0;i<candles;i++){
+        const off=(i-(candles-1)/2)*(longTable?0.34:0.22);
+        const holder=new THREE.Mesh(new THREE.CylinderGeometry(0.038,0.045,0.025,6),brassMat);
+        holder.position.set(off*(longTable?0.95:0.85),0.607,0); g.add(holder);
+        const candle=new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.024,0.11,6),candleWaxMat);
+        candle.position.set(off*(longTable?0.95:0.85),0.67,0); g.add(candle);
+        const flame=new THREE.Mesh(new THREE.SphereGeometry(0.024,5,4),new THREE.MeshBasicMaterial({color:0xffaa44,transparent:true,opacity:0.88}));
+        flame.position.set(off*(longTable?0.95:0.85),0.75,0); g.add(flame);
+      }
+      const candleLight=new THREE.PointLight(0xffc477,0.16*LIGHT_SOURCE_BOOST,2.1,2.0);
+      candleLight.position.set(0,0.77,0); g.add(candleLight);
+      fixtureLights.push({light:candleLight});
+      g.position.set(px,0,pz); g.rotation.y=rot; levelRoot.add(g);
+      addBoxCollider(px,pz,w,d,rot,0.04,0.58,0.58);
+    }
+
+    function addRug(px,pz,w,h,rot,alt=false) {
+      const base=new THREE.Mesh(new THREE.PlaneGeometry(w,h),alt?rugMatB:rugMatA);
+      base.rotation.x=-Math.PI/2; base.rotation.z=rot; base.position.set(px,0.008,pz); levelRoot.add(base);
+      const trim=new THREE.Mesh(new THREE.PlaneGeometry(w*0.88,h*0.82),rugTrimMat);
+      trim.rotation.x=-Math.PI/2; trim.rotation.z=rot; trim.position.set(px,0.009,pz); levelRoot.add(trim);
+      const inner=new THREE.Mesh(new THREE.PlaneGeometry(w*0.72,h*0.58),alt?rugMatA:rugMatB);
+      inner.rotation.x=-Math.PI/2; inner.rotation.z=rot; inner.position.set(px,0.01,pz); levelRoot.add(inner);
+    }
+
+    function addThrone(px,pz,rot=0) {
+      const g=new THREE.Group();
+      const throneWood=new THREE.MeshStandardMaterial({color:0x482219,map:woodGrainTex,roughness:0.88,metalness:0.02});
+      const throneTrim=new THREE.MeshStandardMaterial({color:0xb08743,roughness:0.5,metalness:0.72});
+      // Solid plinth under the seat — a throne floating on air reads as a bug.
+      const dais=new THREE.Mesh(new THREE.BoxGeometry(0.86,0.12,0.74),new THREE.MeshStandardMaterial({color:0x55505a,roughness:0.92,metalness:0.03}));
+      dais.position.y=0.06; g.add(dais);
+      const base=new THREE.Mesh(new THREE.BoxGeometry(0.56,0.42,0.46),throneWood); base.position.y=0.31; g.add(base);
+      const seat=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.12,0.52),throneWood); seat.position.y=0.55; g.add(seat);
+      const back=new THREE.Mesh(new THREE.BoxGeometry(0.62,1.15,0.14),throneWood); back.position.set(0,1.08,0.19); g.add(back);
+      [-1,1].forEach(side=>{
+        const arm=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.16,0.58),throneTrim); arm.position.set(side*0.34,0.72,0); g.add(arm);
+        const post=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.055,0.34,6),throneTrim); post.position.set(side*0.27,1.72,0.19); g.add(post);
+      });
+      const crest=new THREE.Mesh(new THREE.ConeGeometry(0.12,0.18,4),throneTrim); crest.position.set(0,1.86,0.19); g.add(crest);
+      g.position.set(px,0,pz); g.rotation.y=rot; levelRoot.add(g);
+      addBoxCollider(px,pz,0.72,0.7,rot,0.05,1.15,1.15);
+    }
+
+    function addBookshelf(px,pz,rot=0) {
+      const g=new THREE.Group();
+      const shelfWood=new THREE.MeshStandardMaterial({color:0x4d2d1b,map:woodGrainTex,roughness:0.9,metalness:0.01});
+      const shelf=new THREE.Mesh(new THREE.BoxGeometry(0.86,1.7,0.22),shelfWood); shelf.position.y=0.86; g.add(shelf);
+      for(let row=0;row<4;row++) {
+        const plank=new THREE.Mesh(new THREE.BoxGeometry(0.92,0.045,0.28),darkWoodMat); plank.position.set(0,0.22+row*0.4,0.01); g.add(plank);
+        for(let book=0;book<4;book++) {
+          const cover=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.26+(book%2)*0.05,0.18),libraryMats[(row+book)%4]);
+          cover.position.set(-0.3+book*0.2,0.35+row*0.4, -0.14); cover.rotation.z=(book%2?0.04:-0.03); g.add(cover);
+        }
+      }
+      g.position.set(px,0,pz); g.rotation.y=rot; levelRoot.add(g);
+      addBoxCollider(px,pz,0.5,0.25,rot,0.04,1.8,1.8);
+    }
+
+    function addAltar(px,pz,rot=0) {
+      const g=new THREE.Group();
+      const altarStone=new THREE.MeshStandardMaterial({color:0x686158,roughness:0.92,metalness:0.02});
+      const top=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.16,0.48),altarStone); top.position.y=0.82; g.add(top);
+      const legA=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.78,0.3),altarStone);
+      const legB=legA.clone(); legA.position.set(-0.3,0.39,0); legB.position.set(0.3,0.39,0); g.add(legA,legB);
+      const cross=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.42,0.04),brassMat); cross.position.set(0,1.05,0); g.add(cross);
+      const crossBar=new THREE.Mesh(new THREE.BoxGeometry(0.24,0.06,0.04),brassMat); crossBar.position.set(0,1.12,0); g.add(crossBar);
+      g.position.set(px,0,pz); g.rotation.y=rot; levelRoot.add(g);
+      addBoxCollider(px,pz,0.98,0.56,rot,0.04,0.9,0.9);
+    }
+
+    function addBanner(px,pz,rot,warm=false) {
+      const nx=Math.sin(rot), nz=Math.cos(rot);
+      const rodAxis=new THREE.Vector3(Math.cos(rot),0,-Math.sin(rot)).normalize();
+      const rod=new THREE.Mesh(new THREE.CylinderGeometry(0.024,0.024,0.68,6),brassMat);
+      rod.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),rodAxis);
+      rod.position.set(px,1.48,pz); levelRoot.add(rod);
+      const cloth=new THREE.Mesh(new THREE.PlaneGeometry(0.58,0.92),new THREE.MeshStandardMaterial({color:warm?0x991c20:0x24406e,map:fabricTex,roughness:0.96,metalness:0,side:THREE.DoubleSide}));
+      cloth.position.set(px,0.98,pz); cloth.rotation.y=rot; levelRoot.add(cloth);
+      const sigil=new THREE.Mesh(new THREE.PlaneGeometry(0.24,0.32),new THREE.MeshBasicMaterial({color:0xd5b268,transparent:true,opacity:0.88,side:THREE.DoubleSide}));
+      sigil.position.set(px+nx*0.012,1.0,pz+nz*0.012); sigil.rotation.y=rot; levelRoot.add(sigil);
+    }
+
+    function addChandelier(px,pz,scale=1) {
+      const g=new THREE.Group();
+      const chainLen=0.72*scale;
+      const chain=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,chainLen,6),brassMat);
+      chain.position.y=-chainLen*0.5; g.add(chain);
+      const hook=new THREE.Mesh(new THREE.TorusGeometry(0.05*scale,0.014,6,10),brassMat);
+      hook.rotation.x=Math.PI/2; hook.position.y=-chainLen; g.add(hook);
+      const ring=new THREE.Mesh(new THREE.TorusGeometry(0.18*scale,0.022,8,14),new THREE.MeshStandardMaterial({color:0xb88a44,roughness:0.42,metalness:0.82}));
+      ring.rotation.x=Math.PI/2; ring.position.y=-chainLen-0.06*scale; g.add(ring);
+      const armMat=new THREE.MeshStandardMaterial({color:0xa57632,roughness:0.4,metalness:0.88});
+      const flameMat=new THREE.MeshBasicMaterial({color:0xffb24c,transparent:true,opacity:0.92});
+      const armCount=4;
+      for(let i=0;i<armCount;i++){
+        const a=i/armCount*Math.PI*2;
+        const arm=new THREE.Mesh(new THREE.BoxGeometry(0.28*scale,0.03*scale,0.03*scale),armMat);
+        arm.position.set(Math.cos(a)*0.18*scale,-chainLen-0.1*scale,Math.sin(a)*0.18*scale);
+        arm.rotation.y=a;
+        g.add(arm);
+        const cup=new THREE.Mesh(new THREE.ConeGeometry(0.05*scale,0.12*scale,6),armMat);
+        cup.position.set(Math.cos(a)*0.33*scale,-chainLen-0.15*scale,Math.sin(a)*0.33*scale);
+        cup.rotation.z=Math.PI;
+        g.add(cup);
+        const flame=new THREE.Mesh(new THREE.SphereGeometry(0.03*scale,6,5),flameMat);
+        flame.position.set(Math.cos(a)*0.33*scale,-chainLen-0.22*scale,Math.sin(a)*0.33*scale);
+        g.add(flame);
+      }
+      const centerGlow=new THREE.PointLight(0xffb15a,0.8*scale * LIGHT_SOURCE_BOOST,5.2*scale,1.8);
+      centerGlow.position.set(0,-chainLen-0.14*scale,0); g.add(centerGlow);
+      fixtureLights.push({light:centerGlow});
+      addGlowSprite(g,0xffb15a,0.82*scale,0,-chainLen-0.14*scale,0,0.26);
+      g.position.set(px,WALL_H-0.28,pz);
+      levelRoot.add(g);
+    }
+
+    function addPainting(px,pz,rot,wide=false,theme=0) {
+      const g=new THREE.Group();
+      const frameMat=new THREE.MeshStandardMaterial({color:[0x7b542c,0x4d3c2a,0x75512b,0x5a4a3a][theme%4],roughness:0.58,metalness:0.08});
+      const frame=new THREE.Mesh(new THREE.BoxGeometry(wide?0.46:0.36,wide?0.34:0.46,0.03),frameMat);
+      g.add(frame);
+      const artCol=theme===0?(wide?0x203f66:0x4b2338):theme===1?(wide?0x5c3d19:0x7b2c2c):theme===2?(wide?0x264d3b:0x533a6b):0x2d2d42;
+      const artMat=new THREE.MeshStandardMaterial({color:artCol,roughness:0.96,metalness:0.0});
+      const art=new THREE.Mesh(new THREE.BoxGeometry(wide?0.38:0.28,wide?0.26:0.36,0.012),artMat);
+      art.position.z=0.018; g.add(art);
+      const shine=new THREE.Mesh(new THREE.BoxGeometry(wide?0.18:0.12,wide?0.12:0.16,0.006),new THREE.MeshBasicMaterial({color:theme===1?0xffe3aa:0xd9c18e,transparent:true,opacity:0.2}));
+      shine.position.set(wide?-0.06:-0.04,wide?0.03:0.06,0.02); g.add(shine);
+      const topBar=new THREE.Mesh(new THREE.BoxGeometry(wide?0.42:0.32,0.02,0.02),new THREE.MeshBasicMaterial({color:theme===2?0xb7e0d0:0xf1d9a6,transparent:true,opacity:0.38}));
+      topBar.position.set(0,wide?0.07:0.11,0.022); g.add(topBar);
+      if(theme===3){
+        const sig=new THREE.Mesh(new THREE.SphereGeometry(0.05,6,5),new THREE.MeshBasicMaterial({color:0xc8b36a,transparent:true,opacity:0.6}));
+        sig.position.set(0,-0.03,0.02); g.add(sig);
+      }
+      g.position.set(px,WALL_H*0.52,pz);
+      g.rotation.y=rot;
+      levelRoot.add(g);
+    }
+
+    function addTrinketCluster(px,pz,kind=0,theme=0) {
+      const g=new THREE.Group();
+      const baseMat=[0x6f4a22,0x34506f,0x6d2929,0x4c4c57][(kind+theme)%4];
+      const base=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,0.08,6),new THREE.MeshStandardMaterial({color:baseMat,roughness:0.78,metalness:0.12}));
+      base.position.y=0.04; g.add(base);
+      const topperKind=(kind+theme)%5;
+      if(topperKind===0){
+        const vase=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.06,0.18,6),new THREE.MeshStandardMaterial({color:0x9a8d75,roughness:0.88,metalness:0.02}));
+        vase.position.y=0.14; g.add(vase);
+      } else if(topperKind===1){
+        const book=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.03,0.16),new THREE.MeshStandardMaterial({color:0x7c1f2a,roughness:0.84,metalness:0.02}));
+        book.position.y=0.06; g.add(book);
+      } else if(topperKind===2){
+        const goblet=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.05,0.12,6),new THREE.MeshStandardMaterial({color:0xc4a15c,roughness:0.38,metalness:0.82}));
+        goblet.position.y=0.12; g.add(goblet);
+      } else if(topperKind===3){
+        const skull=new THREE.Mesh(new THREE.SphereGeometry(0.055,6,5),new THREE.MeshStandardMaterial({color:0xd7c8a0,roughness:0.9,metalness:0}));
+        skull.position.y=0.11; g.add(skull);
+      } else {
+        const rolledRug=new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.045,0.22,8),new THREE.MeshStandardMaterial({color:0x8a5f34,roughness:0.88,metalness:0.02}));
+        rolledRug.rotation.z=Math.PI/2; rolledRug.position.y=0.065; g.add(rolledRug);
+        const tie=new THREE.Mesh(new THREE.TorusGeometry(0.02,0.005,4,8),new THREE.MeshBasicMaterial({color:0xc3a26a}));
+        tie.rotation.y=Math.PI/2; tie.position.set(0.06,0.065,0); g.add(tie);
+      }
+      g.position.set(px,0,pz);
+      g.rotation.y=(kind%4)*Math.PI/2 + (kind%2?0.25:-0.2);
+      levelRoot.add(g);
+    }
+
+    function addWallSconce(px,pz,rot,theme=0) {
+      const g=new THREE.Group();
+      const mount=new THREE.Mesh(new THREE.BoxGeometry(0.08,0.18,0.04),new THREE.MeshStandardMaterial({color:0x8b6b35,roughness:0.5,metalness:0.78}));
+      mount.position.y=0; g.add(mount);
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.03,0.03),new THREE.MeshStandardMaterial({color:0xa57a3c,roughness:0.42,metalness:0.8}));
+      arm.position.set(rot===Math.PI/2?0.11:rot===-Math.PI/2?-0.11:0,0.02,rot===0?-0.11:rot===Math.PI?0.11:0);
+      arm.rotation.y=rot; g.add(arm);
+      const cup=new THREE.Mesh(new THREE.ConeGeometry(0.04,0.1,6),new THREE.MeshStandardMaterial({color:[0xa57a3c,0x8e5d24,0x75513a][theme%3],roughness:0.42,metalness:0.8}));
+      cup.position.set(rot===Math.PI/2?0.19:rot===-Math.PI/2?-0.19:0,0.05,rot===0?-0.19:rot===Math.PI?0.19:0); cup.rotation.z=Math.PI; g.add(cup);
+      const flame=new THREE.Mesh(new THREE.SphereGeometry(0.026,5,4),new THREE.MeshBasicMaterial({color:theme===2?0xffcc66:0xffb24c,transparent:true,opacity:0.9}));
+      flame.position.set(rot===Math.PI/2?0.19:rot===-Math.PI/2?-0.19:0,0.11,rot===0?-0.19:rot===Math.PI?0.19:0); g.add(flame);
+      const core=new THREE.Mesh(new THREE.SphereGeometry(0.018,5,4),new THREE.MeshBasicMaterial({color:0xffedaa,transparent:true,opacity:0.92}));
+      core.position.copy(flame.position).add(new THREE.Vector3(0,0.018,0)); g.add(core);
+      const lickA=new THREE.Mesh(new THREE.ConeGeometry(0.014,0.055,5),new THREE.MeshBasicMaterial({color:0xff8228,transparent:true,opacity:0.72,side:THREE.DoubleSide}));
+      const lickB=new THREE.Mesh(new THREE.ConeGeometry(0.010,0.04,5),new THREE.MeshBasicMaterial({color:0xffd36e,transparent:true,opacity:0.78,side:THREE.DoubleSide}));
+      lickA.position.copy(flame.position).add(new THREE.Vector3(-0.012,0.026,0.004));
+      lickB.position.copy(flame.position).add(new THREE.Vector3(0.011,0.022,-0.003));
+      g.add(lickA,lickB);
+      const light=new THREE.PointLight(theme===2?0xffdd88:0xffb15a,0.42 * LIGHT_SOURCE_BOOST,3.0,1.8); light.position.set(0,0.12,0); g.add(light);
+      fixtureLights.push({light,flame,core,lickA,lickB,ph:Math.random()*Math.PI*2});
+      addGlowSprite(g,theme===2?0xffdd88:0xffa345,0.48,0,0.12,0,0.22);
+      g.position.set(px,WALL_H*0.52,pz);
+      g.rotation.y=rot;
+      levelRoot.add(g);
+    }
+
+    // ── Room furnishing ──────────────────────────────────────────────────
+    // Rooms are furnished by role so the keep reads as a place people lived
+    // in: the largest chamber becomes the great hall (feast table, benches,
+    // throne, hearth), other rooms become hearth lounges, libraries, chapels,
+    // dining nooks or store rooms. Everything anchors to each room's real
+    // walls and center — exported by the generator — instead of scattering
+    // over random open cells. Free-standing pieces keep low, vaultable
+    // colliders so furniture never fences the player in: you can always jump
+    // over it.
+    const torchAt=(px,pz,r=0.72)=>torches.some(tr=>Math.hypot(tr.flame.position.x-px,tr.flame.position.z-pz)<r);
+    const cellOpen=(x,z)=>!isSolid(currentMap[z]?.[x]??1);
+    const cellSolid=(x,z)=>isSolid(currentMap[z]?.[x]??1);
+
+    function addBench(px,pz,rot,len=0.9){
+      const bench=new THREE.Mesh(new THREE.BoxGeometry(len,0.1,0.22),woodMat);
+      bench.position.set(px,0.33,pz); bench.rotation.y=rot; levelRoot.add(bench);
+      const lx=Math.cos(rot),lz=-Math.sin(rot);
+      for(const s of [-1,1]){
+        const leg=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.32,0.06),darkWoodMat);
+        leg.position.set(px+lx*s*len*0.38,0.16,pz+lz*s*len*0.38); levelRoot.add(leg);
+      }
+      addBoxCollider(px,pz,len,0.22,rot,0.03,0.44,0.44);
+    }
+
+    // A fireplace set into a wall: chimney breast to the ceiling, sooty
+    // firebox, mantel, log fire, and chairs pulled up in front of it.
+    function addHearth(f){
+      const rot=f.rot, nx=Math.sin(rot), nz=Math.cos(rot), tx=Math.cos(rot), tz=-Math.sin(rot);
+      const g=new THREE.Group();
+      // Masonry is mapped rather than flat-shaded: at torch range an untextured
+      // breast is a grey slab, and the hearth is the one prop the player stands
+      // still and looks at. Trim uses a tighter repeat so the dressed lintel and
+      // mantel read as smaller worked blocks than the rubble breast behind them.
+      const stone=new THREE.MeshStandardMaterial({map:hearthStoneTex,color:0x8f867a,roughness:0.93,metalness:0.02});
+      const stoneDark=new THREE.MeshStandardMaterial({map:hearthTrimTex,color:0x565049,roughness:0.95,metalness:0.02});
+      const soot=new THREE.MeshStandardMaterial({map:hearthSootTex,color:0xb0a89e,roughness:0.98,metalness:0});
+      const breast=new THREE.Mesh(new THREE.BoxGeometry(1.46,2.05,0.4),stone); breast.position.set(0,1.02,0.2); g.add(breast);
+      const chimney=new THREE.Mesh(new THREE.BoxGeometry(1.06,WALL_H-2.05,0.3),stone); chimney.position.set(0,2.05+(WALL_H-2.05)/2,0.15); g.add(chimney);
+      const back=new THREE.Mesh(new THREE.PlaneGeometry(0.84,0.86),soot); back.position.set(0,0.45,0.405); g.add(back);
+      const lintel=new THREE.Mesh(new THREE.BoxGeometry(1.1,0.16,0.14),stoneDark); lintel.position.set(0,0.95,0.42); g.add(lintel);
+      for(const s of [-1,1]){ const jamb=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.9,0.14),soot); jamb.position.set(s*0.48,0.45,0.42); g.add(jamb); }
+      const mantel=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.09,0.5),stoneDark); mantel.position.set(0,1.08,0.25); g.add(mantel);
+      const slab=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.05,0.62),stoneDark); slab.position.set(0,0.025,0.5); g.add(slab);
+      // Ash bed under the logs, so the firebox floor is not bare trim stone.
+      const ashBed=new THREE.Mesh(new THREE.BoxGeometry(0.80,0.045,0.34),soot);
+      ashBed.position.set(0,0.045,0.40); g.add(ashBed);
+      const logMat=new THREE.MeshStandardMaterial({color:0x4a2f18,map:woodGrainTex,roughness:0.95,metalness:0});
+      for(const [lx,ly,lr] of [[-0.12,0.1,0.5],[0.14,0.1,-0.4],[0,0.2,0.1]]){
+        const log=new THREE.Mesh(new THREE.CylinderGeometry(0.055,0.06,0.5,6),logMat);
+        log.position.set(lx,ly,0.42); log.rotation.z=Math.PI/2; log.rotation.y=lr; g.add(log);
+      }
+      // Sculpted log fire, not a glowing ball: the same lathe-profile flame
+      // language as the wall torches, scaled up, with core, licks and embers.
+      // Registered in `torches` so it inherits the full flicker animation.
+      // Authored at roughly half the target size: the torch flicker loop
+      // scales the flame by ~1.6-2.2x (its pulse tracks light intensity, and
+      // the hearth runs bright), so this profile lands ~0.5 tall on screen.
+      const flameGeo=new THREE.LatheGeometry([
+        new THREE.Vector2(0.004,0),new THREE.Vector2(0.062,0.016),
+        new THREE.Vector2(0.10,0.066),new THREE.Vector2(0.082,0.136),
+        new THREE.Vector2(0.047,0.206),new THREE.Vector2(0.016,0.256),new THREE.Vector2(0,0.29)
+      ],8);
+      const coreGeo=new THREE.LatheGeometry([
+        new THREE.Vector2(0.003,0),new THREE.Vector2(0.032,0.014),
+        new THREE.Vector2(0.05,0.056),new THREE.Vector2(0.026,0.112),new THREE.Vector2(0,0.15)
+      ],7);
+      const fl=new THREE.Mesh(flameGeo,new THREE.MeshBasicMaterial({color:0xff8a2a,transparent:true,opacity:0.88,side:THREE.DoubleSide}));
+      fl.position.set(0,0.16,0.4); g.add(fl);
+      const core=new THREE.Mesh(coreGeo,new THREE.MeshBasicMaterial({color:0xffedaa,transparent:true,opacity:0.9,side:THREE.DoubleSide}));
+      core.position.set(0,0.17,0.42); g.add(core);
+      const lickA=new THREE.Mesh(new THREE.ConeGeometry(0.032,0.13,5),new THREE.MeshBasicMaterial({color:0xff7a22,transparent:true,opacity:0.72,side:THREE.DoubleSide}));
+      lickA.position.set(-0.11,0.24,0.4); lickA.rotation.z=-0.2; g.add(lickA);
+      const lickB=new THREE.Mesh(new THREE.ConeGeometry(0.026,0.10,5),new THREE.MeshBasicMaterial({color:0xffd36e,transparent:true,opacity:0.75,side:THREE.DoubleSide}));
+      lickB.position.set(0.10,0.22,0.42); lickB.rotation.z=0.24; g.add(lickB);
+      addGlowSprite(g,0xff5d1f,1.5,0,0.5,0.55,0.3);
+      const light=new THREE.PointLight(0xff6633,1.6*LIGHT_SOURCE_BOOST,9.5,1.8);
+      light.position.set(0,0.75,0.72); g.add(light);
+      g.position.set(f.x,0,f.z); g.rotation.y=rot; levelRoot.add(g);
+      const emberX=f.x+nx*0.4, emberZ=f.z+nz*0.4;
+      const embers=[];
+      for(let j=0;j<6;j++){
+        const em=new THREE.Mesh(new THREE.SphereGeometry(0.03,5,4),new THREE.MeshBasicMaterial({color:0xff6611,transparent:true,opacity:0.85}));
+        em.position.set(emberX,0.3,emberZ); levelRoot.add(em);
+        embers.push({m:em,bx:emberX,by:0.26,bz:emberZ,age:Math.random(),life:0.8+Math.random()*0.7,ph:Math.random()*Math.PI*2,lat:0.06+Math.random()*0.05,rise:0.3+Math.random()*0.25});
+      }
+      // noShadow: a light this close to its own chimney breast draws seam
+      // artifacts if promoted to a shadow caster.
+      // lickA/lickB stay static side-tongues: the torch loop's lick offsets
+      // are tuned for the small wall-flame scale and would bury them here.
+      torches.push({light,flame:fl,core,embers,ph:Math.random()*Math.PI*2,pulse:0.24,bi:1.4,noShadow:true});
+      // Breast is solid; the hearth slab is a low step. Chairs are vaultable.
+      addBoxCollider(f.x+nx*0.25,f.z+nz*0.25,1.5,0.5,rot,0.02,1.8);
+      addBoxCollider(f.x+nx*0.55,f.z+nz*0.55,1.4,0.35,rot,0.02,0.62,0.62);
+      addRug(f.x+nx*1.15,f.z+nz*1.15,1.55,1.05,rot);
+      addChair(f.x+nx*1.45+tx*0.46,f.z+nz*1.45+tz*0.46,rot+Math.PI);
+      addChair(f.x+nx*1.45-tx*0.46,f.z+nz*1.45-tz*0.46,rot+Math.PI);
+      reservedInterior.push({x:f.x+nx*0.8,z:f.z+nz*0.8});
+    }
+
+    // Usable wall anchor points inside a room: an open perimeter cell backed
+    // by a wide-enough run of solid wall, with clear floor beside and in
+    // front, away from doors, torches, the key and the spawn.
+    const roomWallSlots=(room)=>{
+      const slots=[];
+      const dirs=[{dx:0,dz:-1,rot:0},{dx:0,dz:1,rot:Math.PI},{dx:-1,dz:0,rot:Math.PI/2},{dx:1,dz:0,rot:-Math.PI/2}];
+      for(const d of dirs){
+        const lx=d.dx?0:1, lz=d.dx?1:0;
+        for(let x=room.x1;x<=room.x2;x++) for(let z=room.z1;z<=room.z2;z++){
+          if((d.dz===-1&&z!==room.z1)||(d.dz===1&&z!==room.z2)||(d.dx===-1&&x!==room.x1)||(d.dx===1&&x!==room.x2)) continue;
+          if(!cellOpen(x,z)||!cellSolid(x+d.dx,z+d.dz)) continue;
+          if(!cellSolid(x+d.dx+lx,z+d.dz+lz)||!cellSolid(x+d.dx-lx,z+d.dz-lz)) continue;
+          if(!cellOpen(x+lx,z+lz)||!cellOpen(x-lx,z-lz)) continue;
+          if(!cellOpen(x-d.dx,z-d.dz)||!cellOpen(x-d.dx*2,z-d.dz*2)) continue;
+          const px=x+0.5,pz=z+0.5;
+          if(Math.hypot(px-spawnX,pz-spawnZ)<4||nearDoorFeature(px,pz,2.4)) continue;
+          if(currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.4)) continue;
+          const face=wallFace(x,z,d.rot);
+          if(torchAt(face.x,face.z,1.05)) continue;
+          // Corner clutter is placed before furnishing — skip anchor points
+          // whose vignette footprint (wall piece + chairs in front) would
+          // land on an existing barrel, column or crate.
+          if(decorHeightAt(px,pz,0.6)>0) continue;
+          if(decorHeightAt(face.x+Math.sin(d.rot)*1.25,face.z+Math.cos(d.rot)*1.25,0.85)>0) continue;
+          const mid=Math.abs(px-((room.x1+room.x2)/2+0.5))+Math.abs(pz-((room.z1+room.z2)/2+0.5));
+          slots.push({...face,mid});
+        }
+      }
+      return slots.sort((a,b)=>a.mid-b.mid);
+    };
+    const takeSlot=(slots,minGap=1.6)=>{
+      const i=slots.findIndex(s=>reservedInterior.every(r=>Math.hypot(r.x-s.x,r.z-s.z)>=minGap));
+      return i<0?null:slots.splice(i,1)[0];
+    };
+
+    if(currentRooms.length>1){
+      const rArea=r=>(r.x2-r.x1+1)*(r.z2-r.z1+1);
+      const furnishable=currentRooms.slice(1)
+        .filter(r=>!inBossExitRoom(r.cx+0.5,r.cz+0.5))
+        .sort((a,b)=>rArea(b)-rArea(a));
+      let hearthsLeft=furnishable.length>=5?2:1;
+      furnishable.forEach((room,ri)=>{
+        const w=room.x2-room.x1+1, h=room.z2-room.z1+1;
+        const cx=(room.x1+room.x2)/2+0.5, cz=(room.z1+room.z2)/2+0.5;
+        const rot=w>=h?0:Math.PI/2;
+        const slots=roomWallSlots(room);
+        // Evaluated lazily so it sees reserves pushed earlier in the same
+        // room (a hearth already claims the space its chairs reach into).
+        const centerFree=()=>Math.hypot(cx-spawnX,cz-spawnZ)>=4.5
+          && !nearDoorFeature(cx,cz,2.6)
+          && !currentMapKeys.some(k=>Math.hypot(cx-k.x,cz-k.z)<2.6)
+          && decorHeightAt(cx,cz,1.1)===0
+          && canUseInterior(cx,cz,2.0);
+        const roll=rng(ri+5000);
+        if(ri===0&&w>=4&&h>=4){
+          room.role='hall';
+          // Great hall: hearth first, feast table only when the room truly
+          // has space left for it, throne on a far wall. Small early-level
+          // halls get the hearth alone rather than everything crammed in.
+          if(hearthsLeft>0){
+            const hs=takeSlot(slots,1.8);
+            if(hs){ addHearth(hs); hearthsLeft--; }
+          }
+          if(Math.min(w,h)>=5&&centerFree()){
+            addRug(cx,cz,2.7,1.7,rot);
+            addTable(cx,cz,true,rot);
+            const bx=Math.sin(rot),bz=Math.cos(rot);
+            addBench(cx+bx*0.42,cz+bz*0.42,rot);
+            addBench(cx-bx*0.42,cz-bz*0.42,rot);
+            reservedInterior.push({x:cx,z:cz});
+          }
+          const ts=takeSlot(slots,2.2);
+          if(ts){
+            addThrone(ts.x+Math.sin(ts.rot)*0.42,ts.z+Math.cos(ts.rot)*0.42,ts.rot+Math.PI);
+            reservedInterior.push({x:ts.x,z:ts.z});
+          }
+        } else if(hearthsLeft>0&&w>=3&&h>=3&&slots.length){
+          // Hearth lounge: fireplace in the wall, chairs pulled up to it —
+          // nothing else, the fire is the room.
+          const hs=takeSlot(slots,1.8);
+          if(hs){ addHearth(hs); hearthsLeft--; room.role='hearth'; }
+        } else if(roll<0.25&&slots.length&&w*h>=12){
+          // Library: shelves back onto the walls, reading table mid-room.
+          let placed=0;
+          for(let k=0;k<2;k++){
+            const s=takeSlot(slots,1.3);
+            if(!s) break;
+            addBookshelf(s.x+Math.sin(s.rot)*0.14,s.z+Math.cos(s.rot)*0.14,s.rot+Math.PI);
+            reservedInterior.push({x:s.x,z:s.z}); placed++;
+          }
+          if(placed) room.role='library';
+          if(placed&&Math.min(w,h)>=4&&centerFree()){
+            addRug(cx,cz,1.9,1.3,rot,true);
+            addTable(cx,cz,false,rot);
+            const a=sideOffset(rot,0.72);
+            addChair(cx+a.x,cz+a.z,rot,false);
+          }
+        } else if(roll<0.45&&slots.length&&w*h>=12){
+          // Chapel: altar against the wall, stool rows facing it down a runner.
+          const s=takeSlot(slots,1.8);
+          if(s){
+            room.role='chapel';
+            const nx=Math.sin(s.rot),nz=Math.cos(s.rot),tx=Math.cos(s.rot),tz=-Math.sin(s.rot);
+            addAltar(s.x+nx*0.34,s.z+nz*0.34,s.rot);
+            addRug(s.x+nx*1.3,s.z+nz*1.3,1.0,1.8,s.rot,true);
+            for(const row of [1.1,1.7]) for(const sd of [-1,1])
+              addChair(s.x+nx*row+tx*sd*0.42,s.z+nz*row+tz*sd*0.42,s.rot+Math.PI,true);
+            reservedInterior.push({x:s.x+nx*0.6,z:s.z+nz*0.6});
+          }
+        } else if(roll<0.65&&w>=4&&h>=4&&centerFree()){
+          // Dining nook: table with chairs at either end.
+          room.role='dining';
+          addRug(cx,cz,2.05,1.45,rot);
+          addTable(cx,cz,false,rot);
+          const a=sideOffset(rot,-0.72), b=sideOffset(rot,0.72);
+          addChair(cx+a.x,cz+a.z,rot+Math.PI,false);
+          addChair(cx+b.x,cz+b.z,rot,false);
+          reservedInterior.push({x:cx,z:cz});
+        } else if(roll<0.7){
+          // Store room: barrels and a crate tucked into a corner.
+          const corners=[[room.x1,room.z1],[room.x2,room.z1],[room.x1,room.z2],[room.x2,room.z2]];
+          for(const [gx,gz] of corners){
+            const px=gx+0.5,pz=gz+0.5;
+            if(!cellOpen(gx,gz)||Math.hypot(px-spawnX,pz-spawnZ)<4||nearDoorFeature(px,pz,2.2)) continue;
+            if(currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.2)) continue;
+            if(!canUseInterior(px,pz,1.4)) continue;
+            if(decorHeightAt(px,pz,0.85)>0) continue; // corner already cluttered
+            const inx=gx===room.x1?1:-1, inz=gz===room.z1?1:-1;
+            addBarrel(px,pz,rng(ri+5200)*Math.PI*2);
+            if(cellOpen(gx+inx,gz)) addBarrel(px+inx*0.52,pz,rng(ri+5201)*Math.PI*2);
+            if(cellOpen(gx,gz+inz)) addCrate(px,pz+inz*0.55,rng(ri+5202)*0.6);
+            reservedInterior.push({x:px,z:pz});
+            room.role='store';
+            break;
+          }
+        }
+        // Rooms falling through every gate stay bare on purpose — an empty
+        // chamber between furnished ones keeps the keep from feeling stuffed.
+      });
+      if(window.DEBUG_DECOR) console.log('[decor] level',currentLevel,
+        furnishable.map(r=>`${r.x2-r.x1+1}x${r.z2-r.z1+1}:${r.role||'bare'}`).join(' '));
+    }
+    const bannerCells=[];
+    const placedBanners=[];
+    for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
+      if(isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      const px=x+0.5,pz=z+0.5;
+      const faces=[];
+      if(currentMap[z][x-1]===1 && !isSolid(currentMap[z-1]?.[x-1]) && !isSolid(currentMap[z+1]?.[x-1])) faces.push(wallFace(x,z,Math.PI/2));
+      if(currentMap[z][x+1]===1 && !isSolid(currentMap[z-1]?.[x+1]) && !isSolid(currentMap[z+1]?.[x+1])) faces.push(wallFace(x,z,-Math.PI/2));
+      if(currentMap[z-1][x]===1 && !isSolid(currentMap[z-1]?.[x-1]) && !isSolid(currentMap[z-1]?.[x+1])) faces.push(wallFace(x,z,0));
+      if(currentMap[z+1][x]===1 && !isSolid(currentMap[z+1]?.[x-1]) && !isSolid(currentMap[z+1]?.[x+1])) faces.push(wallFace(x,z,Math.PI));
+      if(faces.length===1 && !torchAt(faces[0].x,faces[0].z)) bannerCells.push(faces[0]);
+    }
+    sShuf(bannerCells,currentLevel*71+29);
+    const bannerCount=Math.min(Math.floor(bannerCells.length*0.08),18);
+    for(let i=0;i<bannerCount;i++){
+      const b=bannerCells[i];
+      if(Math.hypot(b.x-spawnX,b.z-spawnZ)<3.5||nearDoorFeature(b.x,b.z,2.5)) continue;
+      addBanner(b.x,b.z,b.rot,rng(i+3400)<0.5);
+      placedBanners.push(b);
+    }
+
+    const wallDecorSlots=[];
+    const chandelierCells=[];
+    const sconceCells=[];
+    const fixtureClear=(fx,fy,fz,minGap)=>
+      Math.hypot(fx-spawnX,fz-spawnZ)>=3.5
+      && !nearDoorFeature(fx,fz,2.0)
+      && !torchAt(fx,fz,0.9)
+      && wallDecorSlots.every(d=>Math.hypot(d.x-fx,d.z-fz)>=minGap)
+      && placedBanners.every(b=>Math.hypot(b.x-fx,b.z-fz)>=minGap*0.92)
+      && chandelierCells.every(c=>Math.hypot(c.x-fx,c.z-fz)>=1.4);
+    for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
+      if(isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      const px=x+0.5,pz=z+0.5;
+      const faces=[];
+      if(currentMap[z][x-1]===1) faces.push(wallFace(x,z,Math.PI/2));
+      if(currentMap[z][x+1]===1) faces.push(wallFace(x,z,-Math.PI/2));
+      if(currentMap[z-1]?.[x]===1) faces.push(wallFace(x,z,0));
+      if(currentMap[z+1]?.[x]===1) faces.push(wallFace(x,z,Math.PI));
+      if(faces.length===1) {
+        const face=faces[0];
+        if (fixtureClear(face.x,face.y||0,face.z,1.0)) sconceCells.push(face);
+      }
+    }
+    const sconceCount=Math.min(10,Math.max(3,Math.ceil(sconceCells.length/18)));
+    const chosenSconces=[];
+    while(sconceCells.length&&chosenSconces.length<sconceCount) {
+      let best=0,bestScore=-1;
+      for(let i=0;i<sconceCells.length;i++) {
+        const c=sconceCells[i];
+        const gaps=[...torches.map(t=>Math.hypot(t.flame.position.x-c.x,t.flame.position.z-c.z)),...chosenSconces.map(s=>Math.hypot(s.x-c.x,s.z-c.z))];
+        const score=gaps.length?Math.min(...gaps):999;
+        if(score>bestScore){bestScore=score;best=i;}
+      }
+      const s=sconceCells.splice(best,1)[0];
+      if(chosenSconces.every(c=>Math.hypot(c.x-s.x,c.z-s.z)>=4.2))chosenSconces.push(s);
+    }
+    chosenSconces.forEach((s,i)=>{
+      addWallSconce(s.x,s.z,s.rot,i%3);
+      wallDecorSlots.push(s);
+    });
+
+    const paintingCells=[];
+    for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
+      if(isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      const px=x+0.5,pz=z+0.5;
+      const walls=[];
+      if(currentMap[z][x-1]===1) walls.push(wallFace(x,z,Math.PI/2));
+      if(currentMap[z][x+1]===1) walls.push(wallFace(x,z,-Math.PI/2));
+      if(currentMap[z-1]?.[x]===1) walls.push(wallFace(x,z,0));
+      if(currentMap[z+1]?.[x]===1) walls.push(wallFace(x,z,Math.PI));
+      if(walls.length===1) {
+        const face=walls[0];
+        if (fixtureClear(face.x,face.y||0,face.z,1.1)) paintingCells.push(face);
+      }
+    }
+    sShuf(paintingCells,currentLevel*103+31);
+    const paintingCount=Math.min(Math.max(6,Math.floor(paintingCells.length*0.16)),24);
+    for(let i=0;i<paintingCount;i++) {
+      const p=paintingCells[i];
+      addPainting(p.x,p.z,p.rot,i%3===0,i%4);
+      wallDecorSlots.push(p);
+    }
+
+    const trinketCells=[];
+    for (const cell of interiorCells) {
+      if (cell.tight) continue;
+      if (Math.hypot(cell.x-spawnX,cell.z-spawnZ)<4.5||nearDoorFeature(cell.x,cell.z,2.2)) continue;
+      if (!canUseInterior(cell.x,cell.z,1.8)) continue; // keep clear of furnished vignettes
+      trinketCells.push(cell);
+    }
+    sShuf(trinketCells,currentLevel*79+21);
+    const trinketCount=Math.min(trinketCells.length,12,Math.max(3,Math.floor(trinketCells.length*0.08)));
+    for (let i=0;i<trinketCount;i++) {
+      const c=trinketCells[i];
+      addTrinketCluster(c.x,c.z,i,i%4);
+    }
+
+    const roomCenters=[];
+    for(let z=2;z<worldH-2;z++) for(let x=2;x<worldW-2;x++) {
+      if(isSolid(currentMap[z][x])||currentMap[z][x]===2||currentMap[z][x]===3||currentMap[z][x]===6) continue;
+      const px=x+0.5,pz=z+0.5;
+      const left=spanAt(x,z,-1,0),right=spanAt(x,z,1,0),up=spanAt(x,z,0,-1),down=spanAt(x,z,0,1);
+      const roomW=left+right+1,roomH=up+down+1;
+      if(roomW<5||roomH<5||Math.abs(left-right)>1||Math.abs(up-down)>1)continue;
+      if(Math.hypot(px-spawnX,pz-spawnZ)<4.5||nearDoorFeature(px,pz,3.2)) continue;
+      roomCenters.push({x:px,z:pz,area:roomW*roomH});
+    }
+    roomCenters.sort((a,b)=>b.area-a.area||a.z-b.z||a.x-b.x);
+    // Prefer broad, symmetrical rooms, but fall back to the larger open cells so
+    // procedural layouts always retain visible castle lighting.
+    const chandelierCandidates=[...roomCenters,...interiorCells
+      .filter(c=>c.spanX>=4&&c.spanZ>=4)
+      .sort((a,b)=>(b.spanX*b.spanZ)-(a.spanX*a.spanZ))];
+    for(const c of chandelierCandidates) {
+      if(chandelierCells.every(p=>Math.hypot(p.x-c.x,p.z-c.z)>=5.5)
+        && reservedInterior.every(p=>Math.hypot(p.x-c.x,p.z-c.z)>=2.4)) chandelierCells.push(c);
+      if(chandelierCells.length>=5) break;
+    }
+    // A small final fallback prevents an unusually narrow generated map from
+    // losing all ceiling fixtures.
+    if(!chandelierCells.length) {
+      const fallback=interiorCells.find(c=>Math.hypot(c.x-spawnX,c.z-spawnZ)>=5.5);
+      if(fallback) chandelierCells.push(fallback);
+    }
+    const chandelierCount=Math.min(5,chandelierCells.length);
+    for(let i=0;i<chandelierCount;i++){
+      const c=chandelierCells[i];
+      addChandelier(c.x,c.z,0.9+((i%3)*0.14));
+    }
+    updateTorchLightBudget();
+
+    // ── Ground debris — small narrative clusters along damaged room edges ──────
+    // Keep travel lanes clear: dungeon litter should explain the space, not obstruct it.
+    const debrisCells=[];
+    for(let dz=2;dz<worldH-2;dz++) for(let dx=2;dx<worldW-2;dx++) {
+      const cell=currentMap[dz][dx];
+      if(isSolid(cell)||cell===2||cell===3||cell===6||inBossExitRoom(dx+0.5,dz+0.5)) continue;
+      const left=spanAt(dx,dz,-1,0), right=spanAt(dx,dz,1,0);
+      const up=spanAt(dx,dz,0,-1), down=spanAt(dx,dz,0,1);
+      const spanX=left+right+1, spanZ=up+down+1;
+      if(spanX<4||spanZ<4) continue; // no debris in corridors or choke points
+      const walls=[];
+      if(isSolid(currentMap[dz][dx-1])) walls.push({ox:-0.28,oz:0});
+      if(isSolid(currentMap[dz][dx+1])) walls.push({ox:0.28,oz:0});
+      if(isSolid(currentMap[dz-1][dx])) walls.push({ox:0,oz:-0.28});
+      if(isSolid(currentMap[dz+1][dx])) walls.push({ox:0,oz:0.28});
+      if(!walls.length) continue;
+      const wall=walls[Math.floor(rng(dx*43+dz*67+1900)*walls.length)];
+      const px=dx+0.5+wall.ox, pz=dz+0.5+wall.oz;
+      if(Math.hypot(px-spawnX,pz-spawnZ)<4.2||nearDoorFeature(px,pz,2.6)) continue;
+      if(currentMapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<2.0)||hitsDecorAt(px,pz,0.12)) continue;
+      debrisCells.push({x:px,z:pz});
+    }
+    sShuf(debrisCells,currentLevel*53+7);
+    const debrisCount=Math.min(Math.floor(debrisCells.length*0.28),42);
+    const stoneGeo=new THREE.BoxGeometry(1,1,1);
+    const boneGeo=new THREE.BoxGeometry(1,1,1);
+    const splinterGeo=new THREE.BoxGeometry(1,1,1);
+    const skullGeo=new THREE.SphereGeometry(1,5,4);
+    const bloodGeo=new THREE.CircleGeometry(1,7);
+    const smearGeo=new THREE.PlaneGeometry(1,1);
+    const stoneMat=new THREE.MeshStandardMaterial({color:0x4a4a52,roughness:0.97,metalness:0.01});
+    const boneMat=new THREE.MeshStandardMaterial({color:0xc8bd91,roughness:0.9,metalness:0});
+    const splinterMat=new THREE.MeshStandardMaterial({color:0x56351e,roughness:0.96,metalness:0});
+    const bloodMat=new THREE.MeshBasicMaterial({color:0x3d0507,transparent:true,opacity:0.72,depthWrite:false});
+    const addStone=(x,z,seed)=>{
+      const s=0.055+rng(seed)*0.075;
+      const stone=new THREE.Mesh(stoneGeo,stoneMat);
+      stone.scale.set(s,s*(0.35+rng(seed+1)*0.35),s*(0.65+rng(seed+2)*0.5));
+      stone.position.set(x,stone.scale.y*0.5,z);
+      stone.rotation.set((rng(seed+3)-0.5)*0.25,rng(seed+4)*Math.PI*2,(rng(seed+5)-0.5)*0.3);
+      levelRoot.add(stone);
+    };
+    const addBone=(x,z,seed)=>{
+      const len=0.07+rng(seed)*0.08;
+      const bone=new THREE.Mesh(boneGeo,boneMat);
+      bone.scale.set(len,0.018,0.024);
+      bone.position.set(x,0.014,z); bone.rotation.y=rng(seed+1)*Math.PI*2;
+      levelRoot.add(bone);
+    };
+    const addSplinter=(x,z,seed)=>{
+      const wood=new THREE.Mesh(splinterGeo,splinterMat);
+      wood.scale.set(0.11+rng(seed)*0.13,0.018,0.025+rng(seed+1)*0.025);
+      wood.position.set(x,0.012,z); wood.rotation.y=rng(seed+2)*Math.PI*2;
+      levelRoot.add(wood);
+    };
+    const addBlood=(x,z,seed)=>{
+      const pool=new THREE.Mesh(bloodGeo,bloodMat);
+      pool.scale.set(0.10+rng(seed)*0.08,0.07+rng(seed+1)*0.06,1);
+      pool.rotation.x=-Math.PI/2; pool.rotation.z=rng(seed+2)*Math.PI;
+      pool.position.set(x,0.004,z); levelRoot.add(pool);
+      const smear=new THREE.Mesh(smearGeo,bloodMat);
+      smear.scale.set(0.035,0.12+rng(seed+3)*0.1,1);
+      smear.rotation.x=-Math.PI/2; smear.rotation.z=rng(seed+4)*Math.PI*2;
+      smear.position.set(x+(rng(seed+5)-0.5)*0.12,0.003,z+(rng(seed+6)-0.5)*0.12); levelRoot.add(smear);
+    };
+    for(let d=0;d<debrisCount;d++) {
+      const pos=debrisCells[d], type=rng(d+2000);
+      if(type<0.44) {
+        // Fallen masonry belongs beside damaged stone walls.
+        const count=2+Math.floor(rng(d+2001)*3);
+        for(let i=0;i<count;i++) addStone(pos.x+(rng(d*17+i+2010)-0.5)*0.34,pos.z+(rng(d*19+i+2020)-0.5)*0.34,d*31+i+2030);
+      } else if(type<0.72) {
+        // Sparse remains, clustered rather than uniformly sprinkled everywhere.
+        const count=2+Math.floor(rng(d+2040)*2);
+        for(let i=0;i<count;i++) addBone(pos.x+(rng(d*13+i+2050)-0.5)*0.3,pos.z+(rng(d*23+i+2060)-0.5)*0.3,d*29+i+2070);
+        if(rng(d+2080)<0.28) {
+          const skull=new THREE.Mesh(skullGeo,boneMat);
+          skull.scale.set(0.065,0.055,0.06); skull.position.set(pos.x+0.08,0.055,pos.z-0.05);
+          skull.rotation.y=rng(d+2081)*Math.PI*2; levelRoot.add(skull);
+        }
+      } else if(type<0.9) {
+        // Broken crate, door, or rack fragments.
+        const count=2+Math.floor(rng(d+2090)*3);
+        for(let i=0;i<count;i++) addSplinter(pos.x+(rng(d*11+i+2100)-0.5)*0.32,pos.z+(rng(d*7+i+2110)-0.5)*0.32,d*37+i+2120);
+      } else {
+        // Blood appears with remains, creating a believable event rather than random red dots.
+        addBlood(pos.x,pos.z,d+2130);
+        addBone(pos.x+0.09,pos.z-0.05,d+2140);
+        addBone(pos.x-0.07,pos.z+0.08,d+2150);
+      }
+    }
+  }
+
+  function updateTorches(t,dt) {
+    torches.forEach(tr=>{
+      const fl=Math.sin(t*7.4+tr.ph)*tr.pulse+Math.sin(t*15.1+tr.ph*1.8)*(tr.pulse*0.44);
+      const in2=Math.max(0.18,(tr.bi+fl) * FLICKER_LIGHT_BOOST);
+      if (tr.light) tr.light.intensity=in2;
+      const sc=0.8+in2*0.38; tr.flame.scale.set(sc,sc+0.1,sc);
+      if (tr.core) {
+        tr.core.position.x=tr.flame.position.x+Math.sin(t*12.0+tr.ph)*0.012;
+        tr.core.position.y=tr.flame.position.y+0.01+Math.sin(t*16.0+tr.ph)*0.008;
+        tr.core.scale.setScalar(0.8+in2*0.16);
+      }
+      if (tr.lickA) {
+        tr.lickA.position.x=tr.flame.position.x-0.035+Math.sin(t*10.5+tr.ph)*0.018;
+        tr.lickA.position.y=tr.flame.position.y+0.09+Math.sin(t*14.0+tr.ph)*0.012;
+        tr.lickA.rotation.z=-0.16+Math.sin(t*9.0+tr.ph)*0.18;
+        tr.lickA.scale.set(0.82+in2*0.14,0.8+in2*0.2,0.82+in2*0.14);
+      }
+      if (tr.lickB) {
+        tr.lickB.position.x=tr.flame.position.x+0.03+Math.sin(t*13.0+tr.ph+1)*0.014;
+        tr.lickB.position.y=tr.flame.position.y+0.07+Math.sin(t*17.0+tr.ph+1)*0.01;
+        tr.lickB.rotation.z=0.2+Math.sin(t*11.0+tr.ph)*0.2;
+        tr.lickB.scale.set(0.8+in2*0.14,0.82+in2*0.18,0.8+in2*0.14);
+      }
+      if (tr.aura) {
+        const as=0.72+in2*0.25;
+        tr.aura.scale.set(as,as,1);
+        tr.aura.material.opacity=Math.min(0.46,0.2+in2*0.12);
+      }
+      tr.embers.forEach(em=>{
+        em.age+=dt; if(em.age>=em.life){em.age=0;em.ph=Math.random()*Math.PI*2;em.lat=0.03+Math.random()*0.05;em.rise=0.2+Math.random()*0.22;em.life=0.5+Math.random()*0.6;}
+        const cy=em.age/em.life;
+        em.m.position.set(em.bx+Math.sin(t*4.8+em.ph)*em.lat*cy,em.by+cy*em.rise,em.bz+Math.cos(t*4.1+em.ph)*em.lat*cy);
+        em.m.material.opacity=Math.max(0,0.8*(1-cy));
+        const es=0.6+(1-cy)*0.55; em.m.scale.setScalar(es);
+      });
+    });
+    fireLights.forEach(fl2=>{
+      const f=Math.sin(t*8.6+fl2.ph)*fl2.pulse+Math.sin(t*18+fl2.ph*1.7)*(fl2.pulse*0.4);
+      const in2=Math.max(0.5,(fl2.bi+f) * FLICKER_LIGHT_BOOST); fl2.light.intensity=in2;
+      const fs=0.84+in2*0.17; fl2.flame.scale.set(fs*0.9,fs*1.1,fs*0.9);
+      fl2.flame.material.opacity=Math.min(0.96,0.7+in2*0.16);
+      if (fl2.aura) {
+        const as=1.18+in2*0.2;
+        fl2.aura.scale.set(as,as,1);
+        fl2.aura.material.opacity=Math.min(0.52,0.24+in2*0.1);
+      }
+    });
+    fixtureLights.forEach(fx=>{
+      if (!fx.flame) return;
+      const flicker=0.9+Math.sin(t*9.2+fx.ph)*0.08+Math.sin(t*16.4+fx.ph*1.7)*0.045;
+      fx.light.intensity=fx.light.intensity*0.82+flicker*0.18;
+      fx.flame.scale.set(0.9+flicker*0.12,1.0+flicker*0.18,0.9+flicker*0.12);
+      fx.core.scale.setScalar(0.86+flicker*0.1);
+      fx.lickA.position.y=0.136+Math.sin(t*12.0+fx.ph)*0.006;
+      fx.lickA.rotation.z=-0.16+Math.sin(t*10.0+fx.ph)*0.2;
+      fx.lickB.position.y=0.132+Math.sin(t*14.0+fx.ph+1)*0.005;
+      fx.lickB.rotation.z=0.2+Math.sin(t*11.0+fx.ph)*0.22;
+    });
+  }
+
+  function updateDampAtmosphere(t,dt) {
+    ceilingDrips.forEach(d=>{
+      if (d.wait>0) {
+        d.wait-=dt;
+        d.mesh.visible=false;
+      } else {
+        d.mesh.visible=true;
+        d.y-=d.speed*dt;
+        if (d.y<=0.03) {
+          d.wait=0.2+Math.random()*1.0;
+          d.y=d.topY;
+          d.splashT=0.16;
+          d.splash.scale.setScalar(0.55);
+          d.splash.material.opacity=0.4;
+        }
+        d.mesh.position.y=d.y;
+      }
+      if (d.splashT>0) {
+        d.splashT=Math.max(0,d.splashT-dt);
+        const p=1-(d.splashT/0.16);
+        d.splash.scale.setScalar(0.55+p*1.35);
+        d.splash.material.opacity=Math.max(0,0.34*(1-p));
+      }
+    });
+    mossStrands.forEach(m=>{
+      m.mesh.rotation.z=m.baseRz+Math.sin(t*0.7+m.phase)*m.amp;
+      m.mesh.material.opacity=Math.max(0.45,Math.min(0.92,m.baseOpacity+Math.sin(t*0.55+m.phase)*0.06));
+    });
+  }
+
+  // ── Portal ───────────────────────────────────────────────────────────────────
+  function buildPortal(ex,ez,levelNum=2) {
+    const g=new THREE.Group();
+    const iMat=new THREE.MeshStandardMaterial({color:0x0a0a0e,emissive:0x0a0004,emissiveIntensity:0.5,roughness:0.86,metalness:0.92});
+    const boneMat=new THREE.MeshStandardMaterial({color:0xd0c48c,roughness:0.80,metalness:0});
+
+    // Massive gate posts — floor to ceiling
+    const postGeo=new THREE.BoxGeometry(0.2,WALL_H,0.2);
+    [-0.62,0.62].forEach(ox=>{
+      const post=new THREE.Mesh(postGeo,iMat); post.position.set(ox,WALL_H/2,0); g.add(post);
+      // Post cap
+      const cap=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.14,0.28),iMat); cap.position.set(ox,WALL_H+0.07,0); g.add(cap);
+    });
+
+    // Top crossbar
+    const topBar=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.14,0.18),iMat); topBar.position.set(0,WALL_H-0.07,0); g.add(topBar);
+    // Mid rail
+    const midRail=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.07,0.12),iMat); midRail.position.set(0,WALL_H*0.52,0); g.add(midRail);
+    // Bottom rail
+    const botRail=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.07,0.12),iMat); botRail.position.set(0,0.12,0); g.add(botRail);
+
+    // Seven vertical spear-tipped bars
+    [-0.48,-0.32,-0.16,0,0.16,0.32,0.48].forEach((bx,bi)=>{
+      const bar=new THREE.Mesh(new THREE.BoxGeometry(0.07,WALL_H-0.16,0.07),iMat);
+      bar.position.set(bx,(WALL_H-0.16)/2+0.08,0); g.add(bar);
+      // Spear tip
+      const tip=new THREE.Mesh(new THREE.ConeGeometry(0.068,0.28,4),iMat);
+      tip.position.set(bx,WALL_H+0.14,0); tip.rotation.y=Math.PI/4; g.add(tip);
+    });
+
+    // Three skulls mounted on top crossbar
+    [-0.42,0,0.42].forEach(ox=>{
+      const skull=new THREE.Mesh(new THREE.SphereGeometry(0.11,6,5),boneMat);
+      skull.position.set(ox,WALL_H+0.32,0); skull.scale.set(1,0.88,0.82); g.add(skull);
+      const jaw=new THREE.Mesh(new THREE.BoxGeometry(0.16,0.065,0.1),boneMat);
+      jaw.position.set(ox,WALL_H+0.17,0); g.add(jaw);
+      // Eye sockets with red glow
+      [-0.04,0.04].forEach(ex2=>{
+        const socket=new THREE.Mesh(new THREE.SphereGeometry(0.026,4,4),new THREE.MeshBasicMaterial({color:0x000000}));
+        socket.position.set(ox+ex2,WALL_H+0.32,-0.1); g.add(socket);
+        const eyeGlow=new THREE.Mesh(new THREE.SphereGeometry(0.016,4,4),new THREE.MeshBasicMaterial({color:0xff2200,transparent:true,opacity:0.95}));
+        eyeGlow.position.set(ox+ex2,WALL_H+0.32,-0.09); g.add(eyeGlow);
+      });
+    });
+
+    // Impaled skull at ground level centre
+    const gSkull=new THREE.Mesh(new THREE.SphereGeometry(0.13,6,5),boneMat);
+    gSkull.position.set(0,0.26,0.05); gSkull.scale.set(1,0.84,0.8); g.add(gSkull);
+    const gJaw=new THREE.Mesh(new THREE.BoxGeometry(0.19,0.068,0.1),boneMat); gJaw.position.set(0,0.11,0.05); g.add(gJaw);
+    // Spike under ground skull
+    const spike=new THREE.Mesh(new THREE.ConeGeometry(0.04,0.22,4),iMat); spike.position.set(0,0.0,0); g.add(spike);
+
+    // Hanging chains on posts
+    [-0.62,0.62].forEach(ox=>{
+      for(let ci=0;ci<4;ci++){
+        const link=new THREE.Mesh(new THREE.TorusGeometry(0.036,0.011,4,8),iMat);
+        link.position.set(ox,WALL_H-0.5-ci*0.17,0.12); link.rotation.set(ci%2===0?0:Math.PI/2,0,0); g.add(link);
+      }
+    });
+
+    // Hellfire glow fill (the visual trigger zone)
+    const glow=new THREE.Mesh(new THREE.PlaneGeometry(1.2,WALL_H-0.2),
+      new THREE.MeshBasicMaterial({color:0xff2200,transparent:true,opacity:0.45,side:THREE.DoubleSide}));
+    glow.position.set(0,WALL_H/2,0.01); g.add(glow);
+
+    // Hellfire point light
+    const pl=new THREE.PointLight(0xff3300,1.1 * LIGHT_SOURCE_BOOST,8,1.8); pl.position.set(0,1.1,0.5); g.add(pl);
+    // Secondary skull-eye glow lights
+    const el=new THREE.PointLight(0xff1100,0.4 * LIGHT_SOURCE_BOOST,3,2); el.position.set(0,WALL_H+0.3,0); g.add(el);
+
+    // ── Rune sign — glowing inscription above the gate ────────────────────────────
+    const sc=document.createElement('canvas'); sc.width=256; sc.height=72;
+    const sctx=sc.getContext('2d');
+    // Carved stone slab base with subtle vertical shading
+    const baseGrad=sctx.createLinearGradient(0,0,0,72);
+    baseGrad.addColorStop(0,'#181010'); baseGrad.addColorStop(0.5,'#0e0807'); baseGrad.addColorStop(1,'#080404');
+    sctx.fillStyle=baseGrad; sctx.fillRect(0,0,256,72);
+    // Deterministic stone grain streaks
+    for(let i=0;i<22;i++){
+      const s=i*29+7;
+      sctx.fillStyle=`rgba(80,40,20,${(0.03+sr(s)*0.06).toFixed(3)})`;
+      sctx.fillRect(sr(s*3)*256, sr(s*5)*72, 12+sr(s)*60, 1+sr(s*2)*3);
+    }
+    // Beveled frame — outer shadow, inner glowing bevel
+    sctx.strokeStyle='rgba(0,0,0,0.7)'; sctx.lineWidth=4; sctx.strokeRect(4,4,248,64);
+    const bGrad=sctx.createLinearGradient(0,0,256,0);
+    bGrad.addColorStop(0,'rgba(150,55,12,0.4)'); bGrad.addColorStop(0.5,'rgba(255,120,40,0.85)'); bGrad.addColorStop(1,'rgba(150,55,12,0.4)');
+    sctx.strokeStyle=bGrad; sctx.lineWidth=2; sctx.strokeRect(5,5,246,62);
+    sctx.strokeStyle='rgba(255,180,110,0.18)'; sctx.lineWidth=1; sctx.strokeRect(8,8,240,56);
+    // Corner rune marks
+    sctx.shadowColor='#ff5a1a'; sctx.shadowBlur=6;
+    sctx.font='bold 13px serif'; sctx.fillStyle='#d8531c';
+    sctx.textAlign='left';  sctx.fillText('ᚱᚢ',  12, 24);
+    sctx.textAlign='right'; sctx.fillText('ᚾᛖ', 244, 24);
+    sctx.textAlign='left';  sctx.fillText('ᚠᚺ',  12, 66);
+    sctx.textAlign='right'; sctx.fillText('ᚹᚾ', 244, 66);
+    // Engraved heading — dark carved shadow first, then glowing face
+    sctx.shadowBlur=0;
+    sctx.font='bold 23px serif'; sctx.textAlign='center';
+    sctx.fillStyle='rgba(0,0,0,0.85)'; sctx.fillText(`✶ KEEP ${levelNum} ✶`, 128, 35);
+    sctx.shadowColor='#ff6a1a'; sctx.shadowBlur=18;
+    sctx.fillStyle='#ffb060'; sctx.fillText(`✶ KEEP ${levelNum} ✶`, 128, 33);
+    // Rune row
+    sctx.shadowBlur=9; sctx.font='12px serif'; sctx.fillStyle='#cc5220';
+    sctx.fillText('ᚱᚢᚾ ◆ ᛖᚠᚺ ◆ ᚹᚾᛇ ◆ ᛖᚱᚢ', 128, 57);
+    sctx.shadowBlur=0;
+    const sTex=new THREE.CanvasTexture(sc); sTex.colorSpace=THREE.SRGBColorSpace;
+    const sign=new THREE.Mesh(
+      new THREE.PlaneGeometry(1.45,0.40),
+      new THREE.MeshBasicMaterial({map:sTex,transparent:true,side:THREE.DoubleSide})
+    );
+    sign.position.set(0, WALL_H-0.21, -0.18); g.add(sign);
+    const sL=new THREE.PointLight(0xff4400,0.55 * LIGHT_SOURCE_BOOST,4,2); sL.position.set(0,WALL_H-0.2,-0.30); g.add(sL);
+
+    g.rotation.y=Math.PI/2; // orient to face down hallway
+    // Push gate flush against the end wall (+1.3 toward wall)
+    g.position.set(ex+1.3,0,ez); levelRoot.add(g);
+    levelExit.x=ex+1.3; levelExit.z=ez; levelExit.group=g; levelExit.glow=glow; levelExit.seed=Math.random()*Math.PI*2;
+  }
+
+  // ── Gates ────────────────────────────────────────────────────────────────────
+  function unlockGates() {
+    gates.forEach(g=>{ if(g.opened)return; g.opened=true; currentMap[g.z][g.x]=0; unregisterTransientLights(g.m); if(g.m.parent)g.m.parent.remove(g.m); });
+    navDirty=true;   // opened cells change what the flood field can route through
+    sfx.gate();
+    statusEl.textContent='Gate unlocked — reach the iron gate at the end of the hallway.';
+  }
+
+  // ── Procedural level generator ───────────────────────────────────────────────
+  function generateLevel(idx) {
+    // Seeded PRNG — unique per level index
+    const rng = n => { const x=Math.sin(idx*127.1+n*311.7+1.5)*43758.5453; return x-Math.floor(x); };
+    const rndInt = (n,lo,hi) => lo + Math.floor(rng(n)*(hi-lo+1));
+    const mapSlot = idx % LEVELS.length;
+
+    // Map size grows with every level
+    const cycle = Math.floor(idx/LEVELS.length);
+    const W = Math.min(30 + Math.floor(idx/2) + cycle*2, 50);
+    const H = Math.min(22 + Math.floor(idx/2) + cycle*2, 40);
+
+    // Start all-wall
+    const map = Array.from({length:H}, ()=>new Array(W).fill(1));
+    corridorBands=[];
+    const carveRect = (x1,z1,x2,z2) => {
+      for(let z=z1;z<=z2;z++) for(let x=x1;x<=x2;x++)
+        if(x>0&&x<W-1&&z>0&&z<H-1) map[z][x]=0;
+    };
+    // Keep connectors wide enough for the first-person props and enemies.
+    // Rooms remain unchanged; only the carved passage itself is widened.
+    const CORRIDOR_WIDTH=1;
+    const carveH = (z,x1,x2) => {
+      const mn=Math.min(x1,x2),mx=Math.max(x1,x2);
+      corridorBands.push({axis:'h',z,x1:mn,x2:mx});
+      for(let x=mn;x<=mx;x++) for(let w=0;w<CORRIDOR_WIDTH;w++)
+        if(x>0&&x<W-1&&z+w>0&&z+w<H-1) map[z+w][x]=0;
+    };
+    const carveV = (x,z1,z2) => {
+      const mn=Math.min(z1,z2),mx=Math.max(z1,z2);
+      corridorBands.push({axis:'v',x,z1:mn,z2:mx});
+      for(let z=mn;z<=mx;z++) for(let w=0;w<CORRIDOR_WIDTH;w++)
+        if(x+w>0&&x+w<W-1&&z>0&&z<H-1) map[z][x+w]=0;
+    };
+    // Barrier column — solid wall, only broken at the gate row
+    const barrierX = Math.floor(W*0.62);
+    const gateZ    = rndInt(901, 2, H-3);
+
+    // ── Generate rooms in the left zone ─────────────────────────────
+    const maxRW = Math.min(4+Math.floor(idx/2.5), 8);
+    const maxRH = Math.min(4+Math.floor(idx/2.5), 8);
+    const minRW = Math.max(3, Math.min(3, 2+Math.floor(idx/8)));
+    const minRH = Math.max(3, Math.min(3, 2+Math.floor(idx/8)));
+    const targetRooms = Math.min(6+Math.floor(idx*0.8), 16);
+    const rooms = [];
+    for(let att=0; att<500&&rooms.length<targetRooms; att++) {
+      const rw=rndInt(att*3+1, minRW, maxRW);
+      const rh=rndInt(att*3+2, minRH, maxRH);
+      const rx=rndInt(att*3+3, 1, Math.max(1, barrierX-rw-2));
+      const rz=rndInt(att*3+4, 1, H-rh-2);
+      if(rx<1||rx+rw>=barrierX||rz<1||rz+rh>=H-1) continue;
+      if(rooms.some(r=>rx<=r.x2+1&&rx+rw>=r.x1-1&&rz<=r.z2+1&&rz+rh>=r.z1-1)) continue;
+      rooms.push({x1:rx,z1:rz,x2:rx+rw-1,z2:rz+rh-1,cx:rx+Math.floor(rw/2),cz:rz+Math.floor(rh/2)});
+      carveRect(rx,rz,rx+rw-1,rz+rh-1);
+    }
+    if(rooms.length<2) return LEVELS[idx%LEVELS.length]; // fallback
+
+    // ── A→B spine: order the chambers left→right so the level reads as a route ──
+    // The rooms were scattered across the left zone; sorting them by column turns
+    // them into a directed sequence from the spawn (far left) toward the barrier
+    // gate (right). Connecting each room to the next then guarantees one clear main
+    // path the player follows through the keep — a genuine A→B, not a maze.
+    rooms.sort((a,b)=> (a.cx-b.cx) || (a.cz-b.cz));
+    for(let i=0;i<rooms.length-1;i++) {
+      const a=rooms[i], b=rooms[i+1];
+      // Horizontal leg first keeps the feeling of pushing rightward, deeper in.
+      carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz);
+    }
+
+    // A few optional loop-backs between nearby chambers give room to dodge and
+    // reposition in a fight, without dead ends or random secret tunnels (those made
+    // the old layouts read as noise instead of a place).
+    const loopCount = Math.min(1 + Math.floor(idx/6), 3);
+    for(let c=0;c<loopCount && rooms.length>=3;c++){
+      const i1=rndInt(600+c*37, 0, rooms.length-3);
+      const a=rooms[i1], b=rooms[i1+2];     // skip a room to form a genuine loop
+      carveH(a.cz,a.cx,b.cx); carveV(b.cx,a.cz,b.cz);
+    }
+
+    // ── Gate corridor through barrier ────────────────────────────────
+    const connector = rooms.reduce((best,r)=>r.cx>best.cx?r:best, rooms[0]);
+    carveV(connector.cx, connector.cz, gateZ);
+    carveH(gateZ, connector.cx, barrierX+2);
+    map[gateZ][barrierX] = 7; // gate
+
+    // ── Exit zone — long narrow hallway of dread ──────────────────────
+    const ezX1=barrierX+2, ezX2=W-2;
+    const hallZc = Math.floor(H/2);
+    const hallZ1 = Math.max(1, hallZc-1);
+    const hallZ2 = Math.min(H-2, hallZc+1);
+    carveRect(ezX1, hallZ1, ezX2, hallZ2);
+    // Connect gate row to hallway entry
+    if(gateZ<hallZ1) carveV(ezX1, gateZ, hallZ1);
+    else if(gateZ>hallZ2) carveV(ezX1, hallZ2, gateZ);
+    // Dead-end alcoves off hallway sides for cover and atmosphere
+    const alcoveCount = 2 + Math.floor(idx/2);
+    for(let al=0; al<alcoveCount; al++) {
+      const ax = ezX1+2+Math.floor(rng(3100+al*13)*Math.max(1,ezX2-ezX1-4));
+      const side = rng(3101+al*13)<0.5 ? -1 : 1;
+      const adepth = 1+Math.floor(rng(3102+al*13)*2);
+      for(let d=1;d<=adepth;d++){
+        const az=hallZc+side*(2+d-1);
+        if(az>0&&az<H-1) map[az][ax]=0;
+      }
+    }
+    const ezZ1=hallZ1, ezZ2=hallZ2; // hallway row range
+
+    // ── Place special tiles ───────────────────────────────────────────
+    map[rooms[0].cz][rooms[0].cx] = 2; // spawn in first room
+
+    // Exit: moved one cell back into hallway to prevent clipping into wall
+    const exitX = ezX2 - 1;
+    const exitZ = hallZc;
+    map[exitZ][exitX] = 3;
+
+    // ── Key placement: guarantee it goes somewhere ──────────────────────────
+    const sp=rooms[0];
+    const sorted=rooms.filter(r=>r!==sp).sort((a,b)=>Math.hypot(b.cx-sp.cx,b.cz-sp.cz)-Math.hypot(a.cx-sp.cx,a.cz-sp.cz));
+    const keyChamberCells=new Set();
+    let keyPlaced=false;
+    
+    // Helper: check if a position is wall-adjacent (prefer against walls for atmosphere)
+    const isWallAdjacent=(x,z)=>{
+      const dirs=[[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]];
+      return dirs.some(([dx,dz])=>isSolid(map[z+dz]?.[x+dx]));
+    };
+    
+    // Priority 1: Place in a far room on the left side (against a wall)
+    const leftRooms = sorted.filter(r=>r.x2<barrierX);
+    if(leftRooms.length>0) {
+      const keyRoom = leftRooms[0];
+      // Search for wall-adjacent floor cells first
+      for(let z=keyRoom.z1+1;z<=keyRoom.z2-1&&!keyPlaced;z++) {
+        for(let x=keyRoom.x1+1;x<=keyRoom.x2-1&&!keyPlaced;x++) {
+          if(!isSolid(map[z][x])&&isWallAdjacent(x,z)) { map[z][x]=6; keyPlaced=true; }
+        }
+      }
+      // If no wall-adjacent, take any floor
+      if(!keyPlaced) {
+        for(let z=keyRoom.z1+1;z<=keyRoom.z2-1&&!keyPlaced;z++) {
+          for(let x=keyRoom.x1+1;x<=keyRoom.x2-1&&!keyPlaced;x++) {
+            if(!isSolid(map[z][x])) { map[z][x]=6; keyPlaced=true; }
+          }
+        }
+      }
+    }
+    
+    // Priority 2: Check any non-spawn room before the barrier
+    if(!keyPlaced) {
+      for(let ri=1;ri<sorted.length&&!keyPlaced;ri++) {
+        const r = sorted[ri];
+        if(r.cx>=barrierX) continue; // Only left side
+        for(let z=r.z1+1;z<=r.z2-1&&!keyPlaced;z++) {
+          for(let x=r.x1+1;x<=r.x2-1&&!keyPlaced;x++) {
+            if(!isSolid(map[z][x])&&isWallAdjacent(x,z)) { map[z][x]=6; keyPlaced=true; }
+          }
+        }
+      }
+    }
+    
+    // Priority 3: Check all rooms
+    if(!keyPlaced) {
+      for(let ri=1;ri<rooms.length&&!keyPlaced;ri++) {
+        const r = rooms[ri];
+        for(let z=r.z1+1;z<=r.z2-1&&!keyPlaced;z++) {
+          for(let x=r.x1+1;x<=r.x2-1&&!keyPlaced;x++) {
+            if(!isSolid(map[z][x])&&isWallAdjacent(x,z)) { map[z][x]=6; keyPlaced=true; }
+          }
+        }
+      }
+    }
+    
+    // Final safety: place in spawn room floor if all else fails
+    if(!keyPlaced) {
+      for(let z=sp.z1+1;z<=sp.z2-1&&!keyPlaced;z++) {
+        for(let x=sp.x1+1;x<=sp.x2-1&&!keyPlaced;x++) {
+          if(!isSolid(map[z][x])&&!(z===sp.cz&&x===sp.cx)) { 
+            map[z][x]=6; 
+            keyPlaced=true; 
+          }
+        }
+      }
+    }
+
+    // Record where the key ended up, plus a one-cell skirt. keyChamberCells was
+    // created here, threaded through the level object and checked by addTorches --
+    // but nothing ever added to it, so that near-key exclusion (the only proximity
+    // guard wall torches have) silently did nothing and a torch could be bolted to
+    // the wall the pedestal stands against. Scanning the finished map covers every
+    // placement branch above rather than duplicating the add at each one.
+    for(let z=0;z<H;z++) for(let x=0;x<W;x++) {
+      if(map[z][x]!==6) continue;
+      for(let dz=-1;dz<=1;dz++) for(let dx=-1;dx<=1;dx++)
+        keyChamberCells.add(`${x+dx},${z+dz}`);
+    }
+
+    // ── Enemies: randomized spawn locations ─────────────────────────────────
+    const spawnPX = rooms[0].cx+0.5, spawnPZ = rooms[0].cz+0.5;
+    const MIN_SAFE = 7.5; // enemies must be at least this far from spawn
+    
+    // Collect all valid floor cells from all non-spawn rooms
+    const floorCells=[];
+    for(let ri=1;ri<rooms.length;ri++) {
+      const r=rooms[ri];
+      for(let z=r.z1+1;z<=r.z2-1;z++) {
+        for(let x=r.x1+1;x<=r.x2-1;x++) {
+          if(!isSolid(map[z][x])&&Math.hypot(x+0.5-spawnPX, z+0.5-spawnPZ)>=MIN_SAFE)
+            floorCells.push({x,z});
+        }
+      }
+    }
+    // Shuffle deterministically
+    sShuf(floorCells, currentLevel*87+45);
+    
+    // Spawn enemies at randomized positions
+    const enemies = [];
+    
+    // The roaming population is whatever the level's enemy budget has left after
+    // the hallway guards, the hard pass and the guardian have taken their share --
+    // it is no longer driven by however many rooms the generator happened to pack.
+    // The density cap is a genuine floor-area limit now (roughly one enemy per ten
+    // walkable tiles) rather than the old 40%-of-the-map non-limit.
+    const densityCap=Math.floor(floorCells.length*0.10);
+    let totalEnemies=Math.min(budgetRoaming(idx), densityCap);
+    let cellIdx=0;
+    for(let e=0;e<totalEnemies&&cellIdx<floorCells.length;e++) {
+      const cell=floorCells[cellIdx++];
+      enemies.push({x:cell.x+0.5, z:cell.z+0.5, type:pickMobType(idx, mapSlot, e+1337)});
+    }
+
+    // Hallway guardians — block the path to the iron gate
+    const guardCount = budgetHallwayGuards(idx);
+    for(let g=0;g<guardCount;g++) {
+      const ex=ezX1+1+Math.floor(rng(g+900)*Math.max(1,ezX2-ezX1-3));
+      const ez=hallZ1+Math.floor(rng(g+950)*Math.max(1,hallZ2-hallZ1+1));
+      if(ex>0&&ez>0&&ex<W-1&&ez<H-1&&!isSolid(map[ez][ex]))
+        enemies.push({x:ex+0.5, z:ez+0.5, type:pickMobType(idx, mapSlot, g+999, true)});
+    }
+
+    // ── Pickups ────────────────────────────────────────────────────────
+    const pickups = [];
+    const usedPickupCells=new Set();
+    const progression=getProgressionTargets(idx);
+    const tryAddPickup=(x,z,type,extra={})=>{
+      const key=`${Math.floor(x)},${Math.floor(z)}`;
+      if (usedPickupCells.has(key)) return false;
+      usedPickupCells.add(key);
+      pickups.push({x,z,type,...extra});
+      return true;
+    };
+    const pickupRoomsByDistance=rooms.filter(r=>r!==rooms[0])
+      .sort((a,b)=>Math.hypot(b.cx-rooms[0].cx,b.cz-rooms[0].cz)-Math.hypot(a.cx-rooms[0].cx,a.cz-rooms[0].cz));
+    // Reserve the rooms the guaranteed upgrade/armour drops will want BEFORE the
+    // ambient loot pass runs. Ambient loot claims room centres, and the mandatory
+    // drops only ever fall back to *other room centres* -- so once every room was
+    // taken, the guaranteed pickup silently failed to place at all. That is
+    // reproducible on level 4, where all seven non-spawn rooms get ambient loot
+    // and the tier-2 bow simply does not appear until the level after.
+    const reservedRooms=new Set();
+    if (player.gunTier<6&&progression.gunTier>player.gunTier&&pickupRoomsByDistance[0])
+      reservedRooms.add(pickupRoomsByDistance[0]);
+    if (player.armorTier<6&&progression.armorTier>player.armorTier)
+      for (const r of pickupRoomsByDistance) if(!reservedRooms.has(r)){ reservedRooms.add(r); break; }
+    for(let ri=1;ri<rooms.length;ri++) {
+      if(reservedRooms.has(rooms[ri])) continue;
+      // Never drop ambient loot on the key's own cell either. It self-heals today
+      // because findPickupSpot spirals away from the key at spawn time, but only
+      // just -- in a minimum-size room the key cell is the room's only floor tile.
+      if(keyChamberCells.has(`${rooms[ri].cx},${rooms[ri].cz}`)) continue;
+      if(rng(ri+1000)<0.65)
+        tryAddPickup(rooms[ri].cx+0.5, rooms[ri].cz+0.5, rng(ri+1100)<0.62?'medkit':'ammo');
+    }
+    // Ammo near the gate as a reward for reaching the key area
+    if(!isSolid(map[gateZ]?.[barrierX-2]??1))
+      tryAddPickup(barrierX-2+0.5, gateZ+0.5, 'ammo');
+    // Weapon upgrades follow the level tier curve, so the full set lands by the end of the 20-level arc.
+    if(player.gunTier<6&&progression.gunTier>player.gunTier) {
+      const upRoom=pickupRoomsByDistance[0]||rooms[Math.min(1,rooms.length-1)];
+      if (!tryAddPickup(upRoom.cx+0.5, upRoom.cz+0.5, 'upgrade')) {
+        const fallback=pickupRoomsByDistance.find(r=>!usedPickupCells.has(`${Math.floor(r.cx+0.5)},${Math.floor(r.cz+0.5)}`));
+        if (fallback) tryAddPickup(fallback.cx+0.5, fallback.cz+0.5, 'upgrade');
+      }
+    }
+    // Armor upgrades follow the same spaced-out arc, with later levels catching up missed pieces.
+    if(player.armorTier<6&&progression.armorTier>player.armorTier) {
+      const armorRoom=pickupRoomsByDistance[1]||pickupRoomsByDistance[0]||rooms[Math.min(1,rooms.length-1)];
+      const nextArmorTier=Math.min(player.armorTier+1,6);
+      if (!tryAddPickup(armorRoom.cx+0.5, armorRoom.cz+0.5, 'armor', {tier:nextArmorTier})) {
+        const fallback=pickupRoomsByDistance.find(r=>!usedPickupCells.has(`${Math.floor(r.cx+0.5)},${Math.floor(r.cz+0.5)}`));
+        if (fallback) tryAddPickup(fallback.cx+0.5, fallback.cz+0.5, 'armor', {tier:nextArmorTier});
+      }
+    }
+    // Add support caches when enemy scaling outpaces the player's current gear.
+    const powerGap=Math.max(0,progression.gunTier-player.gunTier)+Math.max(0,progression.armorTier-player.armorTier);
+    const supportCount=Math.min(2, Math.max(0, Math.floor((idx-8)/5))+Math.max(0,powerGap-1));
+    if (supportCount>0) {
+      const supportRooms=pickupRoomsByDistance.filter(r=>!usedPickupCells.has(`${Math.floor(r.cx+0.5)},${Math.floor(r.cz+0.5)}`));
+      for (let i=0;i<Math.min(supportCount,supportRooms.length);i++) {
+        const room=supportRooms[i];
+        const supportType=i===0&&idx<8?'ammo':'medkit';
+        tryAddPickup(room.cx+0.5, room.cz+0.5, supportType);
+      }
+    }
+
+    // Hearths, furniture and clutter are placed by addCastleDecorations, which
+    // works from the real room rectangles exported below.
+
+    // ── Atmosphere cycles through 3 moods ─────────────────────────────
+    const atm = idx%3;
+    return {
+      name:`Keep ${idx+1}`,
+      fogColor: [0x050b0d,0x030a08,0x090708][atm],
+      fogDensity: Math.min(0.18, 0.115 + Math.floor(idx/6)*0.007),
+      ambCol: [0x405768,0x365c50,0x493b48][atm],
+      ambInt: 0.16,
+      rooms, map, enemies, pickups, keyChamberCells,
+      spawnRoom:{...rooms[0]},
+      bossExitRoom:{x1:ezX1-0.5,x2:ezX2+0.5,z1:hallZ1-2.5,z2:hallZ2+2.5},
+    };
+  }
+
+  // ── Load level ───────────────────────────────────────────────────────────────
+  // Mark level geometry as shadow receivers/casters. Only lit (MeshStandard) meshes
+  // participate — flame/sprite/glow meshes use MeshBasic and are ignored by the
+  // shadow map entirely. Floor/ceiling planes receive but do not cast (a flat plane
+  // casting down is pointless and just adds acne).
+  function applyShadowFlags(){
+    levelRoot.traverse(o=>{
+      if(!(o.isMesh||o.isInstancedMesh)) return;
+      const m=o.material;
+      const std=m&&(Array.isArray(m)?m.some(x=>x&&x.isMeshStandardMaterial):m.isMeshStandardMaterial);
+      if(!std) return;
+      const isPlane=o.geometry&&o.geometry.type==='PlaneGeometry';
+      o.receiveShadow=true;
+      o.castShadow=!isPlane&&!o.userData.noCastShadow;
+    });
+  }
+  function loadLevel(idx, keepStats) {
+    clearLevel();
+    const lvl=generateLevel(idx);
+    const diff=getDifficulty(idx);
+    levelMinibossDefeated=false;
+    levelMinibossVariant=getMinibossVariant(idx);
+    const fc=new THREE.Color(lvl.fogColor);
+    scene.fog.color.copy(fc); scene.fog.density=lvl.fogDensity*(settings.fogDensity/0.13); scene.background.copy(fc);
+    ambient.color.setHex(lvl.ambCol); ambient.intensity=lvl.ambInt * GLOBAL_LIGHT_BOOST;
+    currentMap=lvl.map.map(r=>[...r]); sealBorders(currentMap);
+    currentRooms=lvl.rooms||[];
+    bossExitRoom=lvl.bossExitRoom||null;
+    worldW=currentMap[0].length; worldH=currentMap.length;
+    resetNavField();
+
+    // Floor & ceiling
+    const fGeo=new THREE.PlaneGeometry(worldW,worldH); fGeo.rotateX(-Math.PI/2); fGeo.translate(worldW/2,0,worldH/2);
+    levelRoot.add(new THREE.Mesh(fGeo,new THREE.MeshStandardMaterial({
+      map:floorTex,
+      bumpMap:floorTex,
+      bumpScale:0.025,
+      color:0x929087,
+      roughness:0.94,
+      metalness:0,
+    })));
+    const cGeo=new THREE.PlaneGeometry(worldW,worldH); cGeo.rotateX(Math.PI/2); cGeo.translate(worldW/2,WALL_H,worldH/2);
+    levelRoot.add(new THREE.Mesh(cGeo,new THREE.MeshStandardMaterial({map:ceilTex,color:0xa7a2a0,roughness:0.96,metalness:0.01})));
+
+    // Walls (instanced) + special cells
+    const wallGeo=new THREE.BoxGeometry(1,WALL_H,1);
+    const solids=[];
+    const mapKeys=[];
+    let spawnX=lvl.spawnRoom?lvl.spawnRoom.cx+0.5:1.5;
+    let spawnZ=lvl.spawnRoom?lvl.spawnRoom.cz+0.5:1.5;
+    let exitX=worldW-1.5,exitZ=worldH-1.5;
+    for (let z=0;z<worldH;z++) for (let x=0;x<worldW;x++) {
+      const v=currentMap[z][x], px=x+0.5, pz=z+0.5;
+      if (v===1) { const trim=wallClearanceAt(x,z); solids.push({px:px+trim.ox,pz:pz+trim.oz,sx:trim.sx,sz:trim.sz}); }
+      if (v===7) {
+        // Build a wrought-iron gate from individual bars
+        const gGrp=new THREE.Group();
+        const iMat=new THREE.MeshStandardMaterial({color:0x1a1620,emissive:0x2a1a08,emissiveIntensity:0.35,roughness:0.85,metalness:0.88});
+        const iMatGlow=new THREE.MeshStandardMaterial({color:0x0a0810,emissive:0x3a2a10,emissiveIntensity:0.5,roughness:0.8,metalness:0.9});
+        const bar=(bw,bh,bd,bx,by,mat)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(bw,bh,bd),mat||iMat);m.position.set(bx,by,0);gGrp.add(m);};
+        // Outer frame (glowing)
+        bar(0.06,1.68,0.06,-0.59, 0, iMatGlow);   // left post
+        bar(0.06,1.68,0.06, 0.59, 0, iMatGlow);   // right post
+        bar(1.20,0.06,0.06, 0, 0.81);   // top rail
+        bar(1.20,0.06,0.06, 0,-0.81);   // bottom rail
+        // Two horizontal cross-rails
+        bar(1.20,0.045,0.045, 0, 0.30);
+        bar(1.20,0.045,0.045, 0,-0.30);
+        // Six vertical pickets + spear-tip cones
+        [-0.45,-0.30,-0.15,0,0.15,0.30,0.45].forEach(bx=>{
+          bar(0.045,1.56,0.045, bx, 0);
+          const tip=new THREE.Mesh(new THREE.ConeGeometry(0.046,0.18,4),iMat);
+          tip.position.set(bx,0.93,0); gGrp.add(tip);
+        });
+        // Centre ornamental cross (scroll-work accent)
+        bar(0.20,0.04,0.04, 0, 0.52);   // horizontal arm
+        bar(0.04,0.20,0.04, 0, 0.52);   // vertical arm
+        // Diagonal decorative spurs on the ornament
+        const mkDiag=(angle,ox,oy)=>{const d=new THREE.Mesh(new THREE.BoxGeometry(0.13,0.032,0.032),iMat);d.position.set(ox,oy,0);d.rotation.z=angle;gGrp.add(d);};
+        mkDiag( 0.75, 0.07, 0.59); mkDiag(-0.75,-0.07, 0.59);
+        mkDiag(-0.75, 0.07, 0.45); mkDiag( 0.75,-0.07, 0.45);
+        // Gate glow aura
+        const gateGlow=new THREE.PointLight(0x4a2a1a,0.4,2.0,1.2);
+        gGrp.add(gateGlow);
+        gGrp.position.set(px,0.84,pz);
+        gGrp.rotation.y=Math.PI/2;
+        levelRoot.add(gGrp);
+        registerTransientLight(gateGlow);
+        gates.push({x,z,m:gGrp,opened:false});
+      }
+      if (v===2) { spawnX=px; spawnZ=pz; }
+      if (v===3) { exitX=px; exitZ=pz; }
+      if (v===6) { mapKeys.push({x:px,z:pz,type:'key'}); }
+    }
+    currentMapKeys = mapKeys;
+    if (solids.length) {
+      const iw=new THREE.InstancedMesh(wallGeo,wallMat,solids.length);
+      const m4=new THREE.Matrix4();
+      solids.forEach((p,i)=>{ m4.makeScale(p.sx,1,p.sz); m4.setPosition(p.px,WALL_H/2,p.pz); iw.setMatrixAt(i,m4); });
+      iw.instanceMatrix.needsUpdate=true; levelRoot.add(iw);
+    }
+
+    addTorches(lvl.keyChamberCells);
+    addCastleDecorations();
+    // Generated levels get wall hearths from the decorator; only the
+    // hand-authored fallback layouts still carry free-standing fire pits.
+    addFireplaces(lvl.fireplaces||[]);
+    addDampAtmosphere();
+    addGroundClutter();
+    buildPortal(exitX,exitZ,idx+2);
+    // Every prop for this level is now placed, so index them. Must happen before
+    // enemy spawn selection and the first nav flood, both of which query decor.
+    rebuildDecorGrid();
+    const enemySpan=(x,z,dx,dz)=>{
+      let steps=0, cx=x, cz=z;
+      while(cx>=0&&cz>=0&&cx<worldW&&cz<worldH&&!isSolid(currentMap[cz]?.[cx])){ steps++; cx+=dx; cz+=dz; }
+      return steps-1;
+    };
+    const usedEnemyCells=new Set();
+    const enemySpawnCells=[];
+    const mapSlot = idx % LEVELS.length;
+    const canUseEnemySpawn=(px,pz)=>{
+      const cx=Math.floor(px), cz=Math.floor(pz);
+      if (isSolid(currentMap[cz]?.[cx])||inBossExitRoom(px,pz)||hitsDecorAt(px,pz,0.28)) return false;
+      if (Math.hypot(px-spawnX,pz-spawnZ)<7||mapKeys.some(k=>Math.hypot(px-k.x,pz-k.z)<1.35)) return false;
+      const spanX=enemySpan(cx,cz,-1,0)+enemySpan(cx,cz,1,0)+1;
+      const spanZ=enemySpan(cx,cz,0,-1)+enemySpan(cx,cz,0,1)+1;
+      return spanX>=3||spanZ>=3;
+    };
+    for(let ez=2;ez<worldH-2;ez+=2) for(let ex=2;ex<worldW-2;ex+=2) {
+      const px=ex+0.5,pz=ez+0.5;
+      if (canUseEnemySpawn(px,pz)) enemySpawnCells.push({x:px,z:pz});
+    }
+    sShuf(enemySpawnCells, idx*41+19);
+    const takeEnemySpawn=(fallbackX,fallbackZ)=>{
+      if (fallbackX>=0&&fallbackZ>=0) {
+        const key=`${Math.floor(fallbackX)},${Math.floor(fallbackZ)}`;
+        if (canUseEnemySpawn(fallbackX,fallbackZ) && !usedEnemyCells.has(key)) {
+          usedEnemyCells.add(key);
+          return {x:fallbackX,z:fallbackZ};
+        }
+      }
+      while(enemySpawnCells.length>0){
+        const cell=enemySpawnCells.pop();
+        const ck=`${Math.floor(cell.x)},${Math.floor(cell.z)}`;
+        if (usedEnemyCells.has(ck)) continue;
+        usedEnemyCells.add(ck);
+        return cell;
+      }
+      return {x:fallbackX,z:fallbackZ};
+    };
+    // Build enemy list: base template + extra difficulty enemies
+    const allEnemies=[];
+    for (const enemy of (lvl.enemies||[])) {
+      if (inBossExitRoom(enemy.x,enemy.z)) continue;
+      const pos=takeEnemySpawn(enemy.x,enemy.z);
+      allEnemies.push({...enemy,x:pos.x,z:pos.z});
+    }
+    if (diff.extra>0) {
+      // Spawn regular enemies throughout level
+      for(let i=0;i<Math.min(diff.extra,enemySpawnCells.length);i++) {
+        const pos=takeEnemySpawn(-99,-99);
+        if (pos.x===-99) break;
+        const t=pickMobType(idx, mapSlot, i+5000, true);
+        allEnemies.push({x:pos.x,z:pos.z,type:t});
+      }
+    }
+    // Every level has a guardian. Its defeat is required before the exit can open.
+    allEnemies.push({x:exitX,z:exitZ,type:'miniboss',variant:levelMinibossVariant});
+    spawnEnemies(allEnemies, diff, spawnX, spawnZ);
+
+    // Pickups: base level pickups + map keys + supply drops that scale with the
+    // level's enemy budget.
+    //
+    // This used to key off `cycle` (= floor(idx/3)) and grow without limit: two
+    // extra pickups per cycle meant ~18 of them by level 30, three quarters of
+    // which are 25 HP medkits. The endless run therefore got *more* sustainable
+    // the deeper it went, cancelling out the stat curve it is supposed to test.
+    // Supplies now track the number of enemies actually placed and stop climbing.
+    const allPickups=[...(lvl.pickups||[]),...mapKeys];
+    const supplyDrops=Math.min(Math.max(0, Math.round(allEnemies.length/6) - 1), 7);
+    if (supplyDrops>0) {
+      const bonusCells=[];
+      for(let ez=2;ez<worldH-2;ez+=3) for(let ex=2;ex<worldW-2;ex+=3)
+        if(!isSolid(currentMap[ez][ex])) {
+          // Exclude cells near key pedestal (1.5 unit radius to prevent overlap and crowding)
+          const tooCloseToKey=mapKeys.some(k=>Math.hypot(ex+0.5-k.x,ez+0.5-k.z)<1.5);
+          if(!tooCloseToKey) bonusCells.push({x:ex+0.5,z:ez+0.5});
+        }
+      sShuf(bonusCells, idx*53+11);
+      const bonusCount=Math.min(supplyDrops, bonusCells.length);
+      // Weighted toward ammo rather than the old 3:1 medkit split -- arrows are the
+      // resource the late roster actually drains, and healing was the thing making
+      // deep levels soft.
+      for(let i=0;i<bonusCount;i++)
+        allPickups.push({x:bonusCells[i].x,z:bonusCells[i].z,type:i%2===0?'ammo':'medkit'});
+      if (diff.ammoBonus>0 && bonusCells.length>bonusCount) {
+        const ammoCount=Math.min(Math.max(1,Math.floor(diff.ammoBonus/2)), bonusCells.length-bonusCount);
+        for(let i=0;i<ammoCount;i++)
+          allPickups.push({x:bonusCells[bonusCount+i].x,z:bonusCells[bonusCount+i].z,type:'ammo'});
+      }
+    }
+    spawnPickups(allPickups);
+
+    // Validate the marker against the designated start room after all decoration is placed.
+    const sr=lvl.spawnRoom;
+    const insideStartRoom=(x,z)=>!sr||(x>=sr.x1&&x<=sr.x2&&z>=sr.z1&&z<=sr.z2);
+    if(!insideStartRoom(Math.floor(spawnX),Math.floor(spawnZ))||!canMoveTo(spawnX,spawnZ,player.radius,0)) {
+      const candidates=[];
+      if(sr) for(let z=sr.z1;z<=sr.z2;z++) for(let x=sr.x1;x<=sr.x2;x++) {
+        const px=x+0.5,pz=z+0.5;
+        if(!isSolid(currentMap[z]?.[x])&&canMoveTo(px,pz,player.radius,0))
+          candidates.push({x:px,z:pz,d2:(x-sr.cx)*(x-sr.cx)+(z-sr.cz)*(z-sr.cz)});
+      }
+      candidates.sort((a,b)=>a.d2-b.d2);
+      if(candidates.length) { spawnX=candidates[0].x; spawnZ=candidates[0].z; }
+    }
+
+    // Follow a real map route toward the key so the camera points at the room's useful exit.
+    const dirs4=[
+      {yaw:0,dx:0,dz:-1}, {yaw:-Math.PI/2,dx:1,dz:0},
+      {yaw:Math.PI,dx:0,dz:1}, {yaw:Math.PI/2,dx:-1,dz:0},
+    ];
+    const startCell={x:Math.floor(spawnX),z:Math.floor(spawnZ)};
+    const keyTarget=mapKeys[0]&&{x:Math.floor(mapKeys[0].x),z:Math.floor(mapKeys[0].z)};
+    const routeQueue=[{x:startCell.x,z:startCell.z,first:null}];
+    const routeSeen=new Set([`${startCell.x},${startCell.z}`]);
+    let routeFirst=null, fallbackFirst=null;
+    for(let qi=0;qi<routeQueue.length;qi++) {
+      const node=routeQueue[qi];
+      if(keyTarget&&node.x===keyTarget.x&&node.z===keyTarget.z) { routeFirst=node.first; break; }
+      if(!fallbackFirst&&sr&&(node.x<sr.x1||node.x>sr.x2||node.z<sr.z1||node.z>sr.z2)) fallbackFirst=node.first;
+      for(const dir of dirs4) {
+        const x=node.x+dir.dx,z=node.z+dir.dz,key=`${x},${z}`;
+        if(x<0||z<0||x>=worldW||z>=worldH||routeSeen.has(key)||isSolid(currentMap[z][x])) continue;
+        routeSeen.add(key);
+        routeQueue.push({x,z,first:node.first||dir});
+      }
+    }
+    const facing=routeFirst||fallbackFirst||dirs4.find(dir=>!isSolid(currentMap[startCell.z+dir.dz]?.[startCell.x+dir.dx]));
+    const sy=facing?facing.yaw:0;
+    player.x=spawnX; player.z=spawnZ; player.pitch=0; player.yaw=sy;
+    player.hasKey=false; player.levelKills=0;
+    player.y=0; player.vy=0; player.grounded=true;
+    if (!keepStats) { player.health=100; player.ammo=30; player.campaignKills=0; player.gunTier=0; player.armorTier=0; }
+    else { player.ammo=Math.min(player.maxAmmo, player.ammo + diff.ammoBonus); }
+    statusEl.textContent=`${lvl.name} — Find the key and defeat ${levelMinibossVariant.name}.`;
+    if (renderer.shadowMap.enabled) applyShadowFlags();
+    updateTorchLightBudget();
+    updateHud(); updateCamera(0);
+  }
+
+  // ── Enemies ──────────────────────────────────────────────────────────────────
+  function spawnEnemies(list, diff, spawnX, spawnZ) {
+    const D=diff||{hpMult:1,bossHpMult:1,spdMult:1,dmgMult:1};
+    const geo=new THREE.PlaneGeometry(0.96,1.24);
+    const shadowGeo=new THREE.CircleGeometry(0.34,12);
+    const occupied=[];
+    list.forEach((e,i)=>{
+      const type=e.type||'grunt';
+      const variant=type==='miniboss'?(e.variant||getMinibossVariant(currentLevel)):null;
+      const et=variant?variant.stats:(ETYPES[type]||ETYPES.grunt);
+      const isSpectre=type==='spectre';
+      const isFiend=type==='fiend';
+      // Build all sprite states during level loading instead of hitching on the first animation or kill.
+      mkEnemyTex(type,false,1);
+      mkEnemyTex(type,true);
+      const mat=new THREE.MeshBasicMaterial({
+        map:mkEnemyTex(type,false),transparent:true,
+        alphaTest:isSpectre?0.05:0.15,
+        opacity:isSpectre?0.58:1.0,
+        depthWrite:!isSpectre,side:THREE.DoubleSide
+      });
+      if(variant) mat.color.setHex(variant.tint);
+      const mesh=new THREE.Mesh(geo,mat);
+      mesh.scale.set(et.sx,et.sy,1); mesh.renderOrder=isSpectre?4:3; mesh.frustumCulled=false;
+      const sp=safeSpawn(e.x,e.z,occupied,spawnX,spawnZ,type==='miniboss');
+      const baseY=isFiend?1.38:0.05+0.62*et.sy;
+      mesh.position.set(sp.x,baseY,sp.z);
+      const shadow=new THREE.Mesh(
+        shadowGeo,
+        new THREE.MeshBasicMaterial({color:0x000000,transparent:true,opacity:isFiend?0.13:0.24,depthWrite:false})
+      );
+      shadow.rotation.x=-Math.PI/2;
+      shadow.position.set(sp.x,0.012,sp.z);
+      shadow.scale.set(et.sx*(type==='goliath'||type==='miniboss'?1.35:1),et.sx*0.65,1);
+      shadow.renderOrder=1;
+      const spawnHp=Math.max(1,Math.round(
+        et.hp * (type==='miniboss' ? (D.bossHpMult ?? D.hpMult) : D.hpMult)
+      ));
+      mesh.userData={
+        baseColor:mat.color.clone(),
+        alive:true,dying:0,deathT:0,type,bossVariant:variant?.name||null,bossAcd:et.acd,
+        hp:   spawnHp,
+        maxHp:spawnHp,
+        spd:  et.spd  * D.spdMult,
+        dmg:  Math.max(1,Math.round(et.dmg  * D.dmgMult)),
+        acd:  et.acd*0.5+Math.random()*et.acd*0.5,
+        ar:et.ar, bsx:et.sx, bsy:et.sy, ranged:!!et.ranged,
+        hx:sp.x, hz:sp.z, px:sp.x, pz:sp.z,
+        stuckT:0, avoidT:0, lunge:0, wA:Math.random()*Math.PI*2, wT:0,
+        turnBias:Math.random()<0.5?-1:1,
+        bs:Math.random()*Math.PI*2,
+        state:'patrol', alertT:0, id:i,
+        walkPhase:Math.random()*Math.PI*2, attackFlash:0, hitFlash:0,
+        animT:Math.random()*2, animFrame:0, sees:false, losT:Math.random()*0.12,
+        baseY, isFlying:isFiend, shadow,
+      };
+      enemies.push(mesh); levelRoot.add(shadow,mesh); occupied.push({x:sp.x,z:sp.z});
+    });
+  }
+
+  function safeSpawn(x,z,occ,spawnX,spawnZ,allowBossExitRoom=false) {
+    const valid=(px,pz)=>canMoveTo(px,pz,ENEMY_RADIUS)
+      && occ.every(o=>Math.hypot(o.x-px,o.z-pz)>0.7)
+      && Math.hypot(px-spawnX,pz-spawnZ)>=7
+      && (allowBossExitRoom||!inBossExitRoom(px,pz));
+    if (valid(x,z)) return {x,z};
+    for (let r=0.1;r<=6;r+=0.15) for (let a=0;a<Math.PI*2;a+=Math.PI/18) {
+      const nx=x+Math.cos(a)*r,nz=z+Math.sin(a)*r;
+      if (valid(nx,nz)) return{x:nx,z:nz};
+    }
+    return{x,z};
+  }
+
+  // ── Navigation field ─────────────────────────────────────────────────────────
+  // Enemies used to navigate purely by local steering: aim straight at the player,
+  // try a fan of angles up to +-90 degrees, and if every one was blocked, flip a
+  // turn bias and keep pressing. Local steering cannot solve concave geometry --
+  // an enemy whose only door is behind it walks into the wall forever -- so the
+  // old code papered over it by teleporting any enemy that had not moved in two
+  // seconds, which is both a visible glitch and a silent difficulty leak: a good
+  // fraction of every level's mobs never reached the player at all.
+  //
+  // Instead we keep ONE breadth-first distance field over the walkable grid,
+  // flooded out from the player's cell and shared by every enemy; each one simply
+  // walks downhill. Maps top out at 50x40, so a full rebuild touches ~2000 cells
+  // and only happens when the player crosses into a new cell or a gate opens.
+  const NAV_FAR = 65535;
+  const NAV_N8 = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  let navDist=null, navQueue=null;
+  let navGoalCX=-1, navGoalCZ=-1, navDirty=true;
+
+  // Walls only. Used to decide whether the flood can be seeded at all -- the
+  // player may legitimately be standing on top of a prop, which is decor-blocked
+  // for enemies but is still a valid goal to flood outward from.
+  const navWallBlocked = (cx,cz) =>
+    cx<0||cz<0||cx>=worldW||cz>=worldH||isSolid(currentMap[cz][cx]);
+  // Walls plus props an enemy cannot enter. Used for flood expansion and for
+  // choosing a waypoint, so the field never routes into something impassable.
+  const navBlocked = (cx,cz) =>
+    navWallBlocked(cx,cz) || (navDecor?navDecor[cz*worldW+cx]===1:false);
+
+  function resetNavField() { navGoalCX=-1; navGoalCZ=-1; navDirty=true; }
+
+  function rebuildNavField(gx,gz) {
+    navDist.fill(NAV_FAR);
+    const start=gz*worldW+gx;
+    navDist[start]=0;
+    navQueue[0]=start;
+    let head=0, tail=1;
+    // 4-neighbour flood: uniform cost keeps the queue monotonic, so every cell is
+    // reached by a shortest path and enqueued exactly once.
+    while (head<tail) {
+      const idx=navQueue[head++];
+      const x=idx%worldW, z=(idx-x)/worldW;
+      const nd=navDist[idx]+1;
+      for (let i=0;i<4;i++) {
+        const nx=x+NAV_N8[i][0], nz=z+NAV_N8[i][1];
+        if (navBlocked(nx,nz)) continue;
+        const ni=nz*worldW+nx;
+        if (navDist[ni]<=nd) continue;
+        navDist[ni]=nd; navQueue[tail++]=ni;
+      }
+    }
+    navGoalCX=gx; navGoalCZ=gz; navDirty=false;
+  }
+
+  function ensureNavField() {
+    if (!currentMap||!worldW||!worldH) return;
+    const n=worldW*worldH;
+    if (!navDist||navDist.length!==n) {
+      navDist=new Uint16Array(n); navQueue=new Int32Array(n); navDirty=true;
+    }
+    const cx=Math.floor(player.x), cz=Math.floor(player.z);
+    if (!navDirty&&cx===navGoalCX&&cz===navGoalCZ) return;
+    // If the player is clipped into geometry the flood has no valid seed. Keep the
+    // previous field (slightly stale beats blanking every enemy's route) and retry
+    // next frame -- navGoalC* deliberately stays put so the check above fails again.
+    // Tested against walls only: standing on a barrel must not blank the field.
+    if (navWallBlocked(cx,cz)) return;
+    rebuildNavField(cx,cz);
+  }
+
+  // The next cell an enemy at (x,z) should head for, as a world-space point.
+  // Returns null when the enemy shares the player's cell, sits off the grid, or is
+  // sealed off from the player entirely -- callers fall back to direct steering.
+  function navWaypoint(x,z) {
+    if (!navDist) return null;
+    const cx=Math.floor(x), cz=Math.floor(z);
+    if (navBlocked(cx,cz)) return null;
+    const here=navDist[cz*worldW+cx];
+    if (here===NAV_FAR||here===0) return null;
+    let best=null, bestD=here;
+    for (const [dx,dz] of NAV_N8) {
+      const nx=cx+dx, nz=cz+dz;
+      if (navBlocked(nx,nz)) continue;
+      // Diagonals may not cut a corner: both orthogonal neighbours must be open,
+      // or enemies clip through the diagonal gap between two wall blocks.
+      if (dx&&dz&&(navBlocked(cx+dx,cz)||navBlocked(cx,cz+dz))) continue;
+      const nd=navDist[nz*worldW+nx];
+      if (nd<bestD) { bestD=nd; best={x:nx+0.5,z:nz+0.5}; }
+    }
+    return best;
+  }
+
+  function findEnemyRecoverySpot(enemy,r=ENEMY_RADIUS) {
+    const sx=enemy.position.x, sz=enemy.position.z;
+    for (let radius=0.25;radius<=1.5;radius+=0.25) {
+      for (let i=0;i<16;i++) {
+        const angle=(i/16)*Math.PI*2+enemy.userData.turnBias*0.18;
+        const x=sx+Math.cos(angle)*radius, z=sz+Math.sin(angle)*radius;
+        if (!enemyCanMoveTo(x,z,r)) continue;
+        if (enemies.some(other=>other!==enemy&&other.userData.alive&&Math.hypot(other.position.x-x,other.position.z-z)<r*2.1)) continue;
+        return {x,z};
+      }
+    }
+    return null;
+  }
+
+  // Steering helper: try the desired direction, slide along each axis, then
+  // sweep a fan of angles so enemies navigate around ground objects.
+  const STEER_OFFSETS=[0,-0.26,0.26,-0.52,0.52,-0.82,0.82,-1.1,1.1,-1.57,1.57];
+  function steerEnemy(ex,ez,nx,nz,step,er) {
+    // Straight
+    if (enemyCanMoveTo(nx,nz,er)) return {x:nx,z:nz};
+    // Axis slides
+    if (enemyCanMoveTo(nx,ez,er)) return {x:nx,z:ez};
+    if (enemyCanMoveTo(ex,nz,er)) return {x:ex,z:nz};
+    // Angle sweep around the obstacle — picks the closest result to the target
+    const baseAng=Math.atan2(nz-ez,nx-ex);
+    let best=null, bestDist=Infinity;
+    for (let i=1;i<STEER_OFFSETS.length;i++) {
+      const a=baseAng+STEER_OFFSETS[i];
+      const cx=ex+Math.cos(a)*step, cz=ez+Math.sin(a)*step;
+      if (!enemyCanMoveTo(cx,cz,er)) continue;
+      const d=Math.hypot(nx-cx,nz-cz);
+      if (d<bestDist) { bestDist=d; best={x:cx,z:cz}; }
+    }
+    return best;
+  }
+
+  // Pick a flee destination: a free cell that maximises distance from the player
+  // and ideally has no line-of-sight to the player.
+  function findFleeSpot(enemy,er=ENEMY_RADIUS) {
+    const ex=enemy.position.x, ez=enemy.position.z;
+    let best=null, bestScore=-Infinity;
+    for (let i=0;i<24;i++) {
+      const ang=(i/24)*Math.PI*2;
+      const radius=2.5+Math.random()*2.5;
+      const cx=ex+Math.cos(ang)*radius, cz=ez+Math.sin(ang)*radius;
+      if (!enemyCanMoveTo(cx,cz,er)) continue;
+      const distToPlayer=Math.hypot(cx-player.x,cz-player.z);
+      const los=hasLOS(cx,cz,player.x,player.z);
+      const score=distToPlayer+(los?0:2.5);
+      if (score>bestScore) { bestScore=score; best={x:cx,z:cz}; }
+    }
+    return best;
+  }
+
+  // Enemy sprites are unlit, so without this they read at full texture
+  // brightness from any distance and glow through the murk. Approximate the
+  // real lighting instead: the player's carried torch plus whichever level
+  // lights the budget currently has lit. Scene fog handles the rest.
+  // Pooled: this runs every frame and used to allocate a fresh record per visible
+  // light (up to the light budget, so ~1.7k short-lived objects a second at 60fps
+  // on the default setting). _litCount is the live length; _litSources only grows.
+  const _litSources=[], _litPos=new THREE.Vector3();
+  let _litCount=0;
+  function collectLitSources(){
+    _litCount=0;
+    for(const arr of [torches,fireLights,fixtureLights]){
+      for(const s of arr){
+        const l=s.light; if(!l||!l.visible) continue;
+        l.getWorldPosition(_litPos);
+        const rec=_litSources[_litCount]||(_litSources[_litCount]={x:0,z:0,i:0,range:0});
+        rec.x=_litPos.x; rec.z=_litPos.z; rec.i=l.intensity; rec.range=l.distance||8;
+        _litCount++;
+      }
+    }
+  }
+  function enemyShade(x,z){
+    let b=1.5/(1+Math.hypot(player.x-x,player.z-z)*0.45);
+    for(let li=0;li<_litCount;li++){
+      const s=_litSources[li];
+      const d=Math.hypot(s.x-x,s.z-z);
+      if(d<s.range) b=Math.max(b,(s.i*0.5)/(1+d*0.55));
+    }
+    return Math.min(1,0.22+b);
+  }
+  // How hard enemies push off each other, and the range it applies over. Kept
+  // well under 1 so separation only ever bends a route, never overrides it.
+  const SEPARATION_WEIGHT=0.55, SEPARATION_RANGE=0.68;
+  function updateEnemies(dt,elapsed) {
+    const er=ENEMY_RADIUS;
+    // Was performance.now() once per enemy per frame; all uses only need a shared
+    // clock, and animate() already computed one.
+    const nowSec=elapsed!==undefined?elapsed:performance.now()*0.001;
+    collectLitSources();
+    ensureNavField();
+    enemies.forEach(e=>{
+      const d=e.userData;
+      e.lookAt(camera.position.x,e.position.y,camera.position.z);
+      if (!d.alive) {
+        if (d.dying>0) { d.dying=Math.max(0,d.dying-dt*2); d.deathT+=dt; e.material.opacity=d.dying; e.scale.set(d.bsx*(0.7+d.dying*0.3),d.bsy*Math.max(0.12,d.dying),1); e.position.y=0.3+d.dying*0.48; }
+        if (d.shadow) d.shadow.material.opacity=0.18*d.dying;
+        if (d.baseColor) e.material.color.copy(d.baseColor).multiplyScalar(enemyShade(e.position.x,e.position.z));
+        return;
+      }
+      const pdx=player.x-e.position.x,pdz=player.z-e.position.z,dist=Math.hypot(pdx,pdz);
+      d.avoidT=Math.max(0,d.avoidT-dt);
+      d.losT-=dt;
+      if (d.losT<=0 || dist<2.2) {
+        d.sees=dist<14&&hasLOS(e.position.x,e.position.z,player.x,player.z);
+        d.losT=0.11+Math.random()*0.06;
+      }
+      const sees=d.sees;
+      // Crowd separation, accumulated once and reused by every movement branch.
+      // Weighted by how deep the overlap is, so touching sprites push hard and
+      // merely-nearby ones barely register.
+      let sepX=0, sepZ=0, sepN=0;
+      for (const o of enemies) {
+        if (o===e||!o.userData.alive) continue;
+        const odx=e.position.x-o.position.x, odz=e.position.z-o.position.z;
+        const od2=odx*odx+odz*odz;
+        if (od2<0.000001||od2>=SEPARATION_RANGE*SEPARATION_RANGE) continue;
+        const od=Math.sqrt(od2);
+        const w=(SEPARATION_RANGE-od)/od;
+        sepX+=odx*w; sepZ+=odz*w; sepN++;
+      }
+      const t=nowSec+d.bs;
+      // Distant mobs fade out instead of silhouetting black against the fog:
+      // shading can only darken them, and past torch range a darkened sprite
+      // reads as a cardboard cutout hovering in the murk.
+      const vis=Math.max(0,Math.min(1,(13-dist)/4));
+
+      // ── State transitions ────────────────────────────────────────────────────
+      // Low HP threshold: below 25% of max HP triggers flee for non-boss enemies
+      const fleeable=d.type!=='miniboss'&&d.type!=='goliath';
+      const fleeHpRatio=0.25;
+      // Must compare against the HP this enemy actually spawned with. Reading the
+      // unscaled ETYPES base made the ratio exceed 1 on every level past the
+      // first, so nothing ever fled.
+      const maxHp=d.maxHp||ETYPES[d.type]?.hp||10;
+      if (fleeable && d.hp>0 && d.hp/maxHp<fleeHpRatio && d.state!=='flee') {
+        d.state='flee';
+        d.fleeDest=findFleeSpot(e,er);
+        d.fleeT=3+Math.random()*2;
+      }
+      if (d.state==='flee') {
+        d.fleeT-=dt;
+        // Snap out of fleeing if HP recovered (e.g. future mechanic) or timeout
+        if (d.fleeT<=0 || d.hp/maxHp>=fleeHpRatio+0.05) d.state='patrol';
+      } else if (sees) {
+        d.state='chase'; d.alertT=4; d.hx=player.x; d.hz=player.z;
+      } else if (d.alertT>0) {
+        d.alertT-=dt; if(d.alertT<=0) d.state='patrol';
+      }
+
+      // ── Movement ─────────────────────────────────────────────────────────────
+      if (d.state==='flee') {
+        // Refresh flee destination periodically or when reached
+        if (!d.fleeDest || Math.hypot(e.position.x-d.fleeDest.x,e.position.z-d.fleeDest.z)<0.5) {
+          d.fleeDest=findFleeSpot(e,er);
+        }
+        if (d.fleeDest) {
+          const fx=d.fleeDest.x-e.position.x, fz=d.fleeDest.z-e.position.z;
+          const fd=Math.hypot(fx,fz);
+          if (fd>0.05) {
+            const step=d.spd*dt*1.15;
+            let fdx=fx/fd, fdz=fz/fd;
+            // Fleeing packs converge on similar spots, so they need separating for
+            // the same reason chasing ones do.
+            if (sepN) {
+              fdx+=sepX*SEPARATION_WEIGHT; fdz+=sepZ*SEPARATION_WEIGHT;
+              const fs=Math.hypot(fdx,fdz)||1; fdx/=fs; fdz/=fs;
+            }
+            const nx=e.position.x+fdx*step, nz=e.position.z+fdz*step;
+            const moved=steerEnemy(e.position.x,e.position.z,nx,nz,step,er);
+            if (moved) { e.position.x=moved.x; e.position.z=moved.z; }
+          }
+        }
+        // Flee had no stuck handling at all, unlike chase. A cornered low-HP mob
+        // whose steer fails every frame -- or for which findFleeSpot returns null,
+        // which it can -- simply froze, and then re-entered flee immediately
+        // because its HP was still under the threshold. Reuse the chase recovery.
+        {
+          const fmv=Math.hypot(e.position.x-d.px,e.position.z-d.pz);
+          if (fmv<0.003) d.stuckT+=dt; else d.stuckT=Math.max(0,d.stuckT-dt*1.2);
+          if (d.stuckT>1.2) { d.fleeDest=findFleeSpot(e,er); d.stuckT=0.3; }
+          if (d.stuckT>4.0) {
+            const recovery=findEnemyRecoverySpot(e,er);
+            if (recovery) { e.position.x=recovery.x; e.position.z=recovery.z; }
+            d.stuckT=0;
+          }
+        }
+      } else if (d.state==='chase') {
+        if (dist>0.02) {
+          const step=d.spd*dt;
+          // With the player in sight, walk straight at them: routing through cell
+          // centres when the line is already clear makes enemies visibly bob
+          // between grid points instead of closing on you. Out of sight, follow the
+          // flood field, falling back to the last known position only if this
+          // enemy is somehow sealed off from the player.
+          //
+          // `sees` is already a throttled LOS result, so this reuses it rather than
+          // casting a second ray -- an unthrottled hasLOS per enemy per frame is
+          // ~100 wall samples each, which at 30+ chasing mobs is not free.
+          let targetX, targetZ;
+          if (sees) { targetX=player.x; targetZ=player.z; }
+          else {
+            const wp=navWaypoint(e.position.x,e.position.z);
+            if (wp) { targetX=wp.x; targetZ=wp.z; }
+            else { targetX=d.hx; targetZ=d.hz; }
+          }
+          let dx=targetX-e.position.x, dz=targetZ-e.position.z;
+          const dd=Math.hypot(dx,dz)||1;
+          dx/=dd; dz/=dd;
+          // Fold in separation so a pack spreads across the corridor. Without it
+          // every enemy solves for the same route and they collapse into a single
+          // stack of overlapping sprites (enemyCanMoveTo only ever tested walls).
+          if (sepN) {
+            dx+=sepX*SEPARATION_WEIGHT; dz+=sepZ*SEPARATION_WEIGHT;
+            const sd=Math.hypot(dx,dz)||1; dx/=sd; dz/=sd;
+          }
+          const nx=e.position.x+dx*step, nz=e.position.z+dz*step;
+          const moved=steerEnemy(e.position.x,e.position.z,nx,nz,step,er);
+          if (moved) {
+            e.position.x=moved.x; e.position.z=moved.z;
+          } else {
+            // Perpendicular nudge in the preferred turn direction
+            const perpAng=Math.atan2(dz,dx)+Math.PI/2*d.turnBias;
+            const pnx=e.position.x+Math.cos(perpAng)*step, pnz=e.position.z+Math.sin(perpAng)*step;
+            const perp=steerEnemy(e.position.x,e.position.z,pnx,pnz,step,er);
+            if (perp) { e.position.x=perp.x; e.position.z=perp.z; }
+            else d.turnBias*=-1;
+          }
+        }
+        const mv=Math.hypot(e.position.x-d.px,e.position.z-d.pz);
+        if (dist>0.9&&mv<0.003) d.stuckT+=dt; else d.stuckT=Math.max(0,d.stuckT-dt*1.2);
+        if (d.stuckT>0.9) {
+          d.turnBias*=-1;
+          d.stuckT=0.2;
+        }
+        // Last-resort unstick. With the flood field this should essentially never
+        // fire -- it now takes 6s of genuinely zero progress rather than 2s, so a
+        // mob briefly shouldered out of a doorway by its own pack is not yanked
+        // across the room in front of the player.
+        if (d.stuckT>6.0) {
+          const recovery=findEnemyRecoverySpot(e,er);
+          if (recovery) { e.position.x=recovery.x; e.position.z=recovery.z; }
+          d.stuckT=0;
+        }
+      } else {
+        // Patrol
+        d.wT-=dt; if(d.wT<=0){d.wA+=(Math.random()-0.5)*1.4;d.wT=1+Math.random()*2;}
+        const step=d.spd*0.4*dt;
+        // Idle groups spawn close together, so they drift apart here too -- without
+        // it a room's worth of patrollers reads as one sprite until they aggro.
+        let wdx=Math.cos(d.wA), wdz=Math.sin(d.wA);
+        if (sepN) {
+          wdx+=sepX*SEPARATION_WEIGHT; wdz+=sepZ*SEPARATION_WEIGHT;
+          const wd=Math.hypot(wdx,wdz)||1; wdx/=wd; wdz/=wd;
+        }
+        const wx=e.position.x+wdx*step, wz=e.position.z+wdz*step;
+        const pm=steerEnemy(e.position.x,e.position.z,wx,wz,step,er);
+        if (pm && Math.hypot(pm.x-d.hx,pm.z-d.hz)<4) { e.position.x=pm.x; e.position.z=pm.z; }
+        else { d.wA+=Math.PI*(0.8+Math.random()*0.4); d.wT=0; }
+      }
+      const movedDistance=Math.hypot(e.position.x-d.px,e.position.z-d.pz);
+      if (d.shadow) {
+        d.shadow.position.x=e.position.x;
+        d.shadow.position.z=e.position.z;
+        d.shadow.material.opacity=(d.isFlying?0.08+Math.max(0,1-(e.position.y-d.baseY))*0.05:0.24)*vis;
+      }
+      if (dist<1.8) d.lunge=Math.min(1,d.lunge+dt*3); else d.lunge=Math.max(0,d.lunge-dt*2);
+      // Flying enemies oscillate; goliath bobs heavily; others stay low
+      // ── Per-type walk cycle & animation ────────────────────────────────
+      const isWalking=movedDistance>0.002;
+      d.px=e.position.x; d.pz=e.position.z;
+      const wRate=d.isFlying?6.2:d.type==='goliath'?2.6:d.type==='brute'?3.5:5.2;
+      if(isWalking) d.walkPhase+=dt*wRate;
+      const wc=Math.sin(d.walkPhase); // walk cycle -1..1
+      if(d.hitFlash>0) d.hitFlash=Math.max(0,d.hitFlash-dt*1.8);
+      if(d.attackFlash>0) d.attackFlash=Math.max(0,d.attackFlash-dt*4.5);
+      // Swap the two-frame sprite: flyers/spectres flap constantly, walkers step while moving
+      const animRate=d.isFlying?7:d.type==='spectre'?3:(isWalking?(d.type==='goliath'?3.5:6):1.6);
+      d.animT+=dt*animRate;
+      const fr=Math.floor(d.animT)&1;
+      if(fr!==d.animFrame){ d.animFrame=fr; e.material.map=mkEnemyTex(d.type,false,fr); e.material.needsUpdate=true; }
+      const hitPulse=d.hitFlash>0.02?0.06:0;
+
+      if(d.isFlying){
+        // Fiend — wing-flap scale + hover dive
+        e.position.y=d.baseY+Math.sin(t*4.5+d.bs)*0.32+d.lunge*-0.3;
+        e.scale.set(d.bsx*(1+Math.abs(wc)*0.20+d.lunge*0.08+(d.attackFlash>0?0.10:0)+hitPulse),
+                    d.bsy*(1-Math.abs(wc)*0.08+hitPulse*0.6),1);
+      } else if(d.type==='goliath'){
+        // Goliath — heavy stomp
+        const stomp=isWalking?Math.abs(wc)*0.10:0;
+        e.position.y=d.baseY+Math.sin(t*1.8)*0.06+stomp;
+        e.scale.set(d.bsx*(1+d.lunge*0.08+(d.attackFlash>0?0.16:0)+hitPulse),
+                    d.bsy*(1+d.lunge*0.12-stomp*0.6+(d.attackFlash>0?0.12:0)+hitPulse*0.6),1);
+      } else if(d.type==='spectre'){
+        // Spectre — opacity flicker + glide sway
+        e.position.y=d.baseY+Math.sin(t*2.8+d.bs)*0.15;
+        e.material.opacity=Math.max(0.15,0.30+Math.abs(Math.sin(t*6.5+d.bs))*0.32+(d.attackFlash>0?0.28:0))*vis;
+        e.scale.set(d.bsx*(1+wc*0.06+hitPulse),d.bsy*(1+hitPulse*0.6),1);
+      } else if(d.type==='brute'){
+        // Brute — heavy stomp squash
+        const stomp=isWalking?Math.abs(wc)*0.07:0;
+        e.position.y=d.baseY+Math.sin(t*3)*0.03+stomp;
+        e.scale.set(d.bsx*(1+d.lunge*0.07+wc*0.04+(d.attackFlash>0?0.13:0)+hitPulse),
+                    d.bsy*(1+d.lunge*0.10-stomp*0.65+(d.attackFlash>0?0.09:0)+hitPulse*0.6),1);
+      } else {
+        // Grunt / soldier — walk squash-stretch bounce
+        const bounce=isWalking?Math.abs(wc)*0.05:0;
+        e.position.y=d.baseY+bounce*0.6+Math.sin(t*3)*0.02;
+        e.scale.set(d.bsx*(1+d.lunge*0.06-wc*0.03+(d.attackFlash>0?0.10:0)+hitPulse),
+                    d.bsy*(1+d.lunge*0.09+bounce*0.5+(d.attackFlash>0?0.08:0)+hitPulse*0.6),1);
+      }
+      // Body tilt gives each mob a readable animation. Apply it as an incremental
+      // local-space roll on top of lookAt() so the billboard never flips upside down.
+      let tiltZ;
+      if (d.isFlying) {
+        tiltZ=Math.sin(t*11+d.bs)*0.09 + Math.sin(d.walkPhase*1.4)*0.05;
+      } else if (d.type==='goliath' || d.type==='miniboss') {
+        tiltZ=Math.sin(t*1.8+d.bs)*0.03 + (d.attackFlash>0?0.03:0);
+      } else if (d.type==='spectre') {
+        tiltZ=Math.sin(t*3.6+d.bs)*0.04;
+      } else {
+        tiltZ=Math.sin(d.walkPhase*0.8+d.bs)*0.055 + (isWalking?Math.sin(wc*2)*0.02:0) + (d.attackFlash>0?0.02:0);
+      }
+      e.rotateZ(tiltZ);
+      if(d.type!=='spectre') e.material.opacity=vis;
+      // Damage flash takes priority over attack flash; otherwise the sprite
+      // takes the local light level so mobs read as lit by torches, not
+      // self-illuminated.
+      if(d.hitFlash>0.02){
+        e.material.color.setRGB(1, 0.98, 0.55);
+      } else if(d.attackFlash>0.06){
+        e.material.color.setRGB(1, 0.5+d.attackFlash*0.4, 0.12);
+      } else {
+        e.material.color.copy(d.baseColor).multiplyScalar(enemyShade(e.position.x,e.position.z));
+      }
+      // Mob sound timer
+      d.soundT=(d.soundT==null?1.5+Math.random()*3:d.soundT)-dt;
+      if(d.soundT<=0){
+        d.soundT=2.2+Math.random()*4.5;
+        if(sees&&d.state==='chase'&&Math.random()<0.5) sfx.mobAlert(d.type,e.position.x,e.position.z);
+        else if(Math.random()<0.12) sfx.mobIdle(d.type,e.position.x,e.position.z);
+      }
+      d.acd=Math.max(0,d.acd-dt);
+        // Ranged casters (the miniboss and warlocks) hurl a projectile from a
+        // distance instead of closing for melee.
+        // Lower bound is the enemy's own melee reach rather than a flat 2.2, which
+        // left a dead band where a closing caster was too near to cast and too far
+        // to swing, and just walked at you doing nothing.
+        if ((d.type==='miniboss'||d.ranged)&&sees&&dist>d.ar&&dist<9.5&&d.acd<=0&&player.health>0) {
+        if (!hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+          // Blocked by a prop. Without this the cooldown stays at 0 and the whole
+          // ~80-sample path scan re-runs every single frame for as long as the
+          // caster remains blocked; throttle the retry instead.
+          d.acd=0.25;
+        } else {
+        d.attackFlash=0.32;
+        sfx.spellCast(e.position.x,e.position.z);
+        spawnEnemySpell(e);
+        d.acd=(d.bossAcd||ETYPES[d.type].acd)*0.8+Math.random()*0.35;
+        return;
+        }
+      }
+        // `sees` is required here for the same reason the ranged branch above
+        // requires it: hasClearAttackPath only tests decorColliders, never walls,
+        // so on its own it will happily approve a swing straight through stone.
+        // Any inside corner put an unseen enemy within reach of the player -- the
+        // nearest blocked-line-of-sight pair around a single solid cell is 0.885
+        // apart, inside every enemy's attack radius (1.05 to 1.6).
+        //
+        // This costs nothing: d.sees is recomputed every frame once dist < 2.2
+        // (see the LOS block above), and melee reach never exceeds 1.6.
+        if (dist<d.ar&&d.acd<=0&&player.health>0&&sees) {
+        if (!hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+          d.acd=0.25;   // same retry throttle as the ranged branch
+        } else {
+        d.attackFlash=0.24;
+        sfx.enemyAttack(d.type,e.position.x,e.position.z);
+        applyPlayerDamage(d.dmg+Math.floor(Math.random()*4)-1);
+        const attackCooldown=d.bossAcd||ETYPES[d.type].acd;
+        d.acd=attackCooldown*0.7+Math.random()*attackCooldown*0.5;
+        }
+      }
+    });
+  }
+
+  // ── Pickups ──────────────────────────────────────────────────────────────────
+  function spawnPickups(list) {
+    const medMat=new THREE.MeshStandardMaterial({color:0x55dd88,emissive:0x114422,roughness:0.55,metalness:0.1});
+    const amMat =new THREE.MeshStandardMaterial({color:0x77aaee,emissive:0x0e2444,roughness:0.5,metalness:0.2});
+    list.forEach(p=>{
+      const g=new THREE.Group();
+      const pos=p.type==='key'?{x:p.x,z:p.z}:findPickupSpot(p.x,p.z,p.type==='armor'?0.9:0.7);
+      if (p.type==='medkit') {
+        g.add(new THREE.Mesh(new THREE.BoxGeometry(0.22,0.13,0.22),medMat));
+        const ch=new THREE.Mesh(new THREE.BoxGeometry(0.11,0.03,0.03),new THREE.MeshBasicMaterial({color:0xddfff0})); ch.position.y=0.07; g.add(ch);
+        const cv=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.11,0.03),new THREE.MeshBasicMaterial({color:0xddfff0})); cv.position.y=0.07; g.add(cv);
+      } else if (p.type==='ammo') {
+        g.add(new THREE.Mesh(new THREE.BoxGeometry(0.26,0.13,0.15),amMat));
+        const s=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.04,0.03),new THREE.MeshBasicMaterial({color:0xccdfff})); s.position.set(0,0.07,0.07); g.add(s);
+      } else if (p.type==='upgrade') {
+        // Glowing cyan orb — gun upgrade
+        const orb=new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8),new THREE.MeshStandardMaterial({color:0x00aaff,emissive:0x0055ff,emissiveIntensity:1.4,roughness:0.15,metalness:0.9}));
+        const shell=new THREE.Mesh(new THREE.SphereGeometry(0.2,10,8),new THREE.MeshBasicMaterial({color:0x0044ff,transparent:true,opacity:0.22,side:THREE.BackSide}));
+        const ring1=new THREE.Mesh(new THREE.TorusGeometry(0.17,0.018,6,18),new THREE.MeshBasicMaterial({color:0x44ccff}));
+        const ring2=new THREE.Mesh(new THREE.TorusGeometry(0.17,0.018,6,18),new THREE.MeshBasicMaterial({color:0x44ccff}));
+        ring2.rotation.y=Math.PI/2;
+        const glow=new THREE.PointLight(0x0066ff,0.9,3.5,2);
+        g.add(orb,shell,ring1,ring2,glow);
+        g.position.set(pos.x,0.5,pos.z);
+        levelRoot.add(g);
+        registerTransientLight(glow);
+        pickups.push({type:'upgrade',mesh:g,baseY:0.5,ph:Math.random()*Math.PI*2,taken:false});
+        return; // skip the default push below
+      } else if (p.type==='armor') {
+        const tier=Math.min(Math.max(p.tier||0,1),6);
+        const plateCols=[0x7f5934,0x8f939d,0x55a9b6,0xd04a14,0x4fc45b,0xbf93ff];
+        const glowCols=[0x3a2410,0x33405f,0x1e5b7d,0x7a1f06,0x1f5b24,0x5d2f88];
+        const armorMat=new THREE.MeshStandardMaterial({
+          color:plateCols[tier-1],
+          emissive:glowCols[tier-1],
+          emissiveIntensity:tier>=3?0.85:0.45,
+          roughness:0.38,
+          metalness:0.82,
+        });
+        const trimMat=new THREE.MeshStandardMaterial({color:0xe7d9a6,roughness:0.3,metalness:0.7});
+        const glowMat=new THREE.MeshBasicMaterial({color:plateCols[tier-1],transparent:true,opacity:0.18,side:THREE.BackSide});
+        const chest=new THREE.Mesh(new THREE.BoxGeometry(0.28,0.28,0.16),armorMat); g.add(chest);
+        const paulL=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.12,0.12),armorMat); paulL.position.set(-0.2,0.07,0); g.add(paulL);
+        const paulR=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.12,0.12),armorMat); paulR.position.set(0.2,0.07,0); g.add(paulR);
+        const crest=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.34,0.03),trimMat); crest.position.set(0,0.01,0.09); g.add(crest);
+        const belt=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.05,0.18),trimMat); belt.position.set(0,-0.09,0); g.add(belt);
+        const aura=new THREE.Mesh(new THREE.OctahedronGeometry(0.32,0),glowMat); g.add(aura);
+        const glow=new THREE.PointLight(plateCols[tier-1],tier>=3?0.8:0.55,3.2,2); glow.position.y=0.12; g.add(glow);
+        g.position.set(pos.x,0.46,pos.z);
+        levelRoot.add(g);
+        registerTransientLight(glow);
+        pickups.push({type:'armor',tier,mesh:g,baseY:0.46,ph:Math.random()*Math.PI*2,taken:false});
+        return;
+      } else if (p.type==='key') {
+        // Pedestal: ceremonial stone altar with atmospheric effects
+        const baseMat=new THREE.MeshStandardMaterial({color:0x4a4a5a,roughness:0.85,metalness:0.05});
+        const accentMat=new THREE.MeshStandardMaterial({color:0x7a6a4a,roughness:0.7,metalness:0.25});
+        const trimMat=new THREE.MeshStandardMaterial({color:0x9aaa6a,roughness:0.6,metalness:0.4});
+        
+        // Main pedestal base
+        const pedestal=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.45,0.22,8),baseMat);
+        pedestal.position.y=-0.19; g.add(pedestal);
+        
+        // Top plate with ornament
+        const pedestalTop=new THREE.Mesh(new THREE.CylinderGeometry(0.38,0.38,0.06,8),accentMat);
+        pedestalTop.position.y=0.06; g.add(pedestalTop);
+        
+        // Decorative base rim (golden)
+        const baseRim=new THREE.Mesh(new THREE.CylinderGeometry(0.48,0.48,0.03,8),trimMat);
+        baseRim.position.y=-0.27; g.add(baseRim);
+        
+        // Ornamental pillars on sides (4 corner columns)
+        const pillarGeo=new THREE.CylinderGeometry(0.045,0.05,0.5,6);
+        const positions=[[0.25,0.25],[0.25,-0.25],[-0.25,0.25],[-0.25,-0.25]];
+        positions.forEach(([px,pz])=>{
+          const pillar=new THREE.Mesh(pillarGeo,accentMat);
+          pillar.position.set(px,0.05,pz);
+          g.add(pillar);
+        });
+        
+        // Glowing orbs (mystical aura)
+        const orbMat=new THREE.MeshStandardMaterial({color:0xffdd44,emissive:0xffaa00,emissiveIntensity:0.8,roughness:0.3,metalness:0.7});
+        const orbGlow=new THREE.PointLight(0xffaa00,0.6,2.5,2);
+        const orb1=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8),orbMat);
+        orb1.position.set(0.28,0.25,0.28); g.add(orb1);
+        const orb2=new THREE.Mesh(new THREE.SphereGeometry(0.06,8,8),orbMat);
+        orb2.position.set(-0.28,0.25,-0.28); g.add(orb2);
+        orbGlow.position.set(0,0.3,0);
+        g.add(orbGlow);
+        registerTransientLight(orbGlow);
+        
+        // Top accent ring (golden)
+        const topRing=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.025,6,16),trimMat);
+        topRing.position.y=0.12; topRing.rotation.x=Math.PI/2.2;
+        g.add(topRing);
+        
+        // Key — golden and mystical
+        const dimKeyMat=new THREE.MeshStandardMaterial({color:0xffd700,emissive:0xffaa00,roughness:0.4,metalness:0.65});
+        const ring=new THREE.Mesh(new THREE.TorusGeometry(0.055,0.016,8,14),dimKeyMat); ring.rotation.y=Math.PI/2; ring.position.y=0.18; g.add(ring);
+        const st=new THREE.Mesh(new THREE.BoxGeometry(0.09,0.02,0.02),dimKeyMat); st.position.set(0.068,0.18,0); g.add(st);
+        const t1=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.035,0.02),dimKeyMat); t1.position.set(0.11,-0.015+0.18,0); g.add(t1);
+        const t2=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.025,0.02),dimKeyMat); t2.position.set(0.135,-0.006+0.18,0); g.add(t2);
+      }
+      g.position.set(pos.x,0.3,pos.z); levelRoot.add(g);
+      pickups.push({type:p.type,mesh:g,baseY:0.3,ph:Math.random()*Math.PI*2,taken:false});
+    });
+  }
+
+  function updatePickups(dt,elapsed) {
+    pickups.forEach(p=>{
+      if (p.taken) return;
+      // Key pedestal stays stationary, only slight vertical bob
+      if (p.type==='key') {
+        p.mesh.position.y=p.baseY+Math.sin(elapsed*1.5+p.ph)*0.025;
+      } else {
+        // Other pickups spin and bob normally
+        p.mesh.rotation.y+=dt*1.7;
+        p.mesh.position.y=p.baseY+Math.sin(elapsed*2.7+p.ph)*0.055;
+      }
+      if (Math.hypot(p.mesh.position.x-player.x,p.mesh.position.z-player.z)>0.44) return;
+      p.taken=true;
+      unregisterTransientLights(p.mesh);
+      if(p.mesh.parent) p.mesh.parent.remove(p.mesh);
+      if (p.type==='medkit') {
+        player.health=Math.min(100,player.health+25);
+        pkFlash.style.background='rgba(80,220,130,0.22)'; statusEl.textContent='Medkit — +25 HP';
+      } else if (p.type==='ammo') {
+        player.ammo=Math.min(player.maxAmmo,player.ammo+AMMO_PICKUP);
+        pkFlash.style.background='rgba(185,132,54,0.22)'; statusEl.textContent=`Quiver — +${AMMO_PICKUP} arrows`;
+      } else if (p.type==='upgrade') {
+        player.gunTier=Math.min(player.gunTier+1,6);
+        player.upgrades++;
+        const wFlash=['rgba(120,90,20,0.30)','rgba(50,30,8,0.30)','rgba(180,160,90,0.25)','rgba(80,0,160,0.32)','rgba(160,0,0,0.34)','rgba(80,170,255,0.34)','rgba(170,130,255,0.34)'];
+        pkFlash.style.background=wFlash[Math.min(player.gunTier,6)];
+        statusEl.textContent=`Found: ${bowNames[player.gunTier]}! — ${bowShots[player.gunTier]}`;
+      } else if (p.type==='armor') {
+        player.armorTier=Math.max(player.armorTier,Math.min(p.tier||1,6));
+        player.upgrades++;
+        const aFlash=['rgba(140,90,45,0.26)','rgba(120,135,165,0.28)','rgba(70,170,200,0.3)','rgba(220,90,30,0.34)','rgba(120,220,120,0.30)','rgba(210,170,255,0.34)'];
+        pkFlash.style.background=aFlash[Math.min(Math.max(0,player.armorTier-1),aFlash.length-1)];
+        statusEl.textContent=`Recovered: ${ARMOR_NAMES[player.armorTier]} — ${Math.round(ARMOR_ABSORB[player.armorTier]*100)}% damage ward`;
+      } else {
+        player.hasKey=true; pkFlash.style.background='rgba(240,210,80,0.25)';
+        statusEl.textContent='Key found — the gate is open!'; unlockGates();
+      }
+      pkFlash.style.opacity='0.95'; setTimeout(()=>{pkFlash.style.opacity='0';},120);
+      sfx.pickup(p.type);
+      updateHud();
+    });
+  }
+
+  // ── Exit ─────────────────────────────────────────────────────────────────────
+  function updateExit(elapsed) {
+    if (!levelExit.group) return;
+    const pulse=0.55+Math.sin(elapsed*2.4+levelExit.seed)*0.28;
+    // Gate doesn't spin — pulse the hellfire glow
+    levelExit.glow.material.opacity=Math.max(0.28,pulse*0.85);
+    const dist=Math.hypot(levelExit.x-player.x,levelExit.z-player.z);
+    if (dist<1.1&&player.health>0) {
+      if (!player.hasKey) statusEl.textContent='The iron gate is sealed — find the key.';
+      else if (!levelMinibossDefeated) statusEl.textContent=`The guardian lives — defeat ${levelMinibossVariant?.name||'the miniboss'} first.`;
+      else onLevelComplete();
+    }
+  }
+
+  // ── Movement ─────────────────────────────────────────────────────────────────
+  function updateMovement(dt) {
+    const wasGrounded=player.grounded, impactSpeed=player.vy;
+    if (!player.grounded) player.vy-=JUMP_GRAVITY*dt;
+    player.y+=player.vy*dt;
+    const surfaceTop=walkSurfaceAt(player.x,player.z,player.radius);
+    const floorTop=0;
+    const landingTop=Math.max(floorTop,surfaceTop);
+    const ceilingTop=JUMP_MAX_Y;
+    if (player.y>ceilingTop) {
+      player.y=ceilingTop;
+      if (player.vy>0) player.vy=0;
+    }
+    if (player.y<=landingTop && player.vy<=0) {
+      player.y=landingTop;
+      player.vy=0;
+      player.grounded=true;
+    } else if (player.y<floorTop) {
+      player.y=floorTop;
+      player.vy=0;
+      player.grounded=true;
+    } else {
+      player.grounded=false;
+    }
+    if(!wasGrounded&&player.grounded&&impactSpeed<-1.25) sfx.land();
+
+    let mx=0,mz=0;
+    const cos=Math.cos(player.yaw), sin=Math.sin(player.yaw);
+    // Standard FPS: W=forward, S=backward, A=strafe left, D=strafe right
+    if (move.fwd)  { mx-=sin; mz-=cos; }
+    if (move.bck)  { mx+=sin; mz+=cos; }
+    if (move.lft)  { mx-=cos; mz+=sin; }
+    if (move.rgt)  { mx+=cos; mz-=sin; }
+    const len=Math.hypot(mx,mz);
+    player.moving=len>0.001;
+    if (player.moving) {
+      mx/=len; mz/=len;
+      const nx=player.x+mx*player.speed*dt, nz=player.z+mz*player.speed*dt;
+      if (canMoveTo(nx,player.z,player.radius,player.y)) player.x=nx;
+      if (canMoveTo(player.x,nz,player.radius,player.y)) player.z=nz;
+      player.bobPhase+=dt*7.8;
+    }
+  }
+
+  // ── Camera ───────────────────────────────────────────────────────────────────
+  function updateCamera(dt) {
+    const bob=player.moving?Math.sin(player.bobPhase)*0.038:0;
+    let sy=0,sp=0;
+    if (shake.sT>0){const s=shake.sT/0.12;sy+=(Math.random()-0.5)*shake.sS*s;sp+=(Math.random()-0.5)*shake.sS*s;shake.sT=Math.max(0,shake.sT-dt);}
+    if (shake.hT>0){const s=shake.hT/0.14;sy+=(Math.random()-0.5)*shake.hS*s;sp+=(Math.random()-0.5)*shake.hS*s;shake.hT=Math.max(0,shake.hT-dt);}
+    camera.position.set(player.x,CAM_Y+bob+player.y,player.z);
+    camera.rotation.set(player.pitch+sp,player.yaw+sy,0,'YXZ');
+    camera.rotation.z=0;
+    camera.up.set(0,1,0);
+  }
+
+  function updatePlayerTorch(elapsed,dt){
+    const bob=player.moving?Math.sin(player.bobPhase)*0.018:0;
+    torchRig.position.x=-0.38+Math.sin(elapsed*2.7)*0.008;
+    torchRig.position.y=-0.34+bob+Math.sin(elapsed*4.1)*0.006;
+    torchRig.position.z=-0.54;
+    torchRig.visible=true;
+    torchRig.rotation.z=-0.025+Math.sin(elapsed*2.1)*0.012;
+    const flicker=0.94+Math.sin(elapsed*17.0)*0.035+Math.sin(elapsed*29.0)*0.025;
+    torchLight.intensity=torchBaseIntensity*flicker;
+    torchSpotLight.intensity=torchSpotBaseIntensity*(0.96+Math.sin(elapsed*13.0)*0.025+Math.sin(elapsed*27.0)*0.018);
+    const flameSway=Math.sin(elapsed*11.5)*0.006+Math.sin(elapsed*23.0)*0.003;
+    carriedTorchFlame.position.set(flameSway,0.151+Math.sin(elapsed*18.0)*0.004,Math.sin(elapsed*14.0)*0.003);
+    carriedTorchFlame.rotation.set(Math.sin(elapsed*15.0)*0.10,Math.sin(elapsed*19.0)*0.12,flameSway*5.0);
+    carriedTorchFlame.scale.set(0.86+flicker*0.16,0.9+flicker*0.22,0.86+flicker*0.16);
+    carriedTorchFlame.material.opacity=0.60+flicker*0.10;
+    carriedTorchCore.position.set(flameSway*0.55,0.158+Math.sin(elapsed*18.0)*0.003,-0.008+Math.sin(elapsed*16.0)*0.002);
+    carriedTorchCore.rotation.y+=dt*2.2;
+    carriedTorchCore.scale.setScalar(0.9+flicker*0.12);
+    carriedTorchLickA.position.x=-0.028+Math.sin(elapsed*13.0)*0.012;
+    carriedTorchLickA.position.y=0.215+Math.sin(elapsed*17.0)*0.009;
+    carriedTorchLickA.rotation.z=-0.18+Math.sin(elapsed*11.0)*0.16;
+    carriedTorchLickA.scale.set(0.82+flicker*0.18,0.88+flicker*0.24,0.82+flicker*0.18);
+    carriedTorchLickB.position.x=0.026+Math.sin(elapsed*15.0+1.4)*0.010;
+    carriedTorchLickB.position.y=0.204+Math.sin(elapsed*19.0+0.8)*0.008;
+    carriedTorchLickB.rotation.z=0.22+Math.sin(elapsed*12.0+0.5)*0.18;
+    carriedTorchLickB.scale.set(0.82+flicker*0.16,0.86+flicker*0.22,0.82+flicker*0.16);
+    // crossbowKick is normalised 0..1 and decays over roughly a quarter second,
+    // so every recoil offset below is expressed as a fraction of a full kick.
+    crossbowKick=Math.max(0,crossbowKick-dt*4.2);
+    crossbowRig.visible=player.weaponMode===2&&meleeSwing<=0;
+    crossbowRig.position.x=CROSSBOW_HOME.x+Math.sin(elapsed*2.4+1.2)*0.005;
+    crossbowRig.position.y=CROSSBOW_HOME.y+bob*0.8+Math.sin(elapsed*3.2+0.7)*0.004;
+    crossbowRig.position.z=CROSSBOW_HOME.z+crossbowKick*0.13;
+    crossbowRig.rotation.x=CROSSBOW_TILT.x-crossbowKick*0.30;
+    crossbowRig.rotation.z=CROSSBOW_TILT.z+Math.sin(elapsed*2.2)*0.008;
+    // Release throws the string off the nut to the prod and straightens the V;
+    // watching it get re-spanned is the reload tell, so no HUD glance needed.
+    crossbowStringGroup.position.z=-crossbowKick*0.34;
+    crossbowStringGroup.scale.z=1-crossbowKick*0.92;
+    // The nocked bolt vanishes the moment it is loosed and only reappears once
+    // the string is back — and never at all when the quiver is dry.
+    crossbowBolt.visible=player.ammo>0&&crossbowKick<0.55;
+    if(meleeSwing>0) {
+      // Dagger stab: the point swings in from its resting cant and squares up
+      // as it drives forward, so the thrust lands straight down the crosshair
+      // rather than arriving at an angle.
+      meleeSwing=Math.max(0,meleeSwing-dt*7.5);
+      const swing=1-meleeSwing;
+      const stab=Math.min(1,swing/0.40);
+      const pull=Math.max(0,(swing-0.40)/0.60);
+      const stabEase=stab*stab*(3-2*stab);
+      const pullEase=pull*pull*(3-2*pull);
+      const reach=stabEase-pullEase;
+      meleeRig.visible=true;
+      meleeRig.position.x=MELEE_HOME.x-0.10*reach;
+      meleeRig.position.y=MELEE_HOME.y+0.05*reach;
+      meleeRig.position.z=MELEE_HOME.z-0.44*reach;
+      meleeRig.rotation.x=MELEE_TILT.x-0.14*reach;
+      meleeRig.rotation.y=MELEE_TILT.y-0.20*reach;
+      meleeRig.rotation.z=MELEE_TILT.z+0.13*reach;
+    } else {
+      meleeRig.visible=player.weaponMode===1;
+      meleeRig.position.set(MELEE_HOME.x,MELEE_HOME.y,MELEE_HOME.z);
+      meleeRig.rotation.set(MELEE_TILT.x,MELEE_TILT.y,MELEE_TILT.z);
+    }
+  }
+
+  function jump() {
+    if (gameState!=='playing'||!gameActive||player.health<=0) return;
+    if (!player.grounded) return;
+    player.vy=JUMP_VELOCITY;
+    player.grounded=false;
+    player.y=Math.max(player.y,0.02);
+  }
+
+  // ── Shooting ─────────────────────────────────────────────────────────────────
+  function damageEnemy(e,damage){
+    const d=e.userData;
+    if(!d.alive) return;
+    d.hp-=damage;
+    // Hit confirm. Without this you cannot tell a landed arrow from a miss.
+    if(d.hp>0) sfx.hit(e.position.x,e.position.z,Math.min(player.gunTier,6));
+    d.hitFlash=0.18;
+    e.material.color.setHex(0xffffff);
+    d.state='chase'; d.alertT=6;
+    if(d.hp<=0) {
+      d.alive=false; d.dying=1.0;
+      sfx.enemyDie(d.type,e.position.x,e.position.z);
+      e.material.map=mkEnemyTex(d.type,true); e.material.needsUpdate=true;
+      player.levelKills++; player.campaignKills++;
+      if(d.type==='miniboss') {
+        levelMinibossDefeated=true;
+        statusEl.textContent=`${d.bossVariant||'The guardian'} defeated — the exit is unsealed.`;
+      }
+      if(d.type==='miniboss'&&currentLevel>=6&&player.armorTier<6) {
+        spawnDropPickup('armor',e.position.x,e.position.z,{tier:player.armorTier+1});
+      } else if(d.type==='miniboss') {
+        spawnDropPickup('ammo',e.position.x,e.position.z);
+        spawnDropPickup('medkit',e.position.x,e.position.z);
+      } else if(Math.random()<0.25) {
+        spawnDropPickup('ammo',e.position.x,e.position.z);
+      }
+      spawnGibs(e.position,d.type);
+    }
+  }
+
+  function meleeAttack() {
+    if(player.health<=0||gameState!=='playing'||player.meleeCd>0) return;
+    player.meleeCd=0.30;
+    meleeSwing=1;
+    sfx.melee();
+    const camDir=new THREE.Vector3(); camera.getWorldDirection(camDir);
+    const ray=new THREE.Raycaster(camera.position.clone(),camDir,0,2.15);
+    const target=findArrowHit(ray,new Set());
+    // Weaker per-second than the bow of the same tier, and it makes you close to
+    // melee range to use it -- but it no longer rounds to nothing once mobs scale.
+    if(target) damageEnemy(target,meleeDamage());
+    shake.sT=0.07; shake.sS=0.035;
+    updateHud();
+  }
+
+  function setWeaponMode(mode) {
+    if(mode!==1&&mode!==2) return;
+    player.weaponMode=mode;
+    if(gameState==='playing') statusEl.textContent=mode===1?'Sword equipped':'Bow equipped';
+    updateHud();
+  }
+
+  function shoot() {
+    if (player.weaponMode!==2||player.ammo<=0||player.health<=0||gameState!=='playing'||player.shootCd>0) return;
+    player.ammo--;
+    const T=Math.max(0,Math.min(player.gunTier,6));
+    player.shootCd=SHOOT_CD[T];
+    player.recoil=0.28;
+    crossbowKick=1;
+    sfx.shoot(T);
+    // Magical arrow flash only for T3+
+    if(T>=3){ muzzleLight.color.setHex(T===4?0xff2200:0x8833cc); muzzleLight.intensity=T===4?1.0:0.7; }
+    else { muzzleLight.intensity=0; }
+    if(T>=3){ sFlash.style.opacity='0.10'; setTimeout(()=>{sFlash.style.opacity='0';},35); }
+    shake.sT=0.10; shake.sS=0.05;
+    // Ray spread offsets per tier. Each ray seeks a different enemy.
+    const RAYS=ARROW_RAYS[T] || [{x:0,y:0}];
+    const killed=new Set();
+    for(const off of RAYS) {
+      const camDir=new THREE.Vector3(); camera.getWorldDirection(camDir);
+      const camRight=new THREE.Vector3().crossVectors(camDir,new THREE.Vector3(0,1,0)).normalize();
+      const camUp=new THREE.Vector3().crossVectors(camDir,camRight).normalize();
+      const damageDir=camDir.clone()
+        .addScaledVector(camRight,off.x*0.25)
+        .addScaledVector(camUp,off.y*0.25)
+        .normalize();
+      const ray=new THREE.Raycaster(camera.position.clone(),damageDir,0,BOW_RANGE);
+      const e=findArrowHit(ray,killed);
+      let aimDistance=8;
+      if(e){
+        const targetDelta=new THREE.Vector3(e.position.x-camera.position.x,(e.userData.baseY-0.12)-camera.position.y,e.position.z-camera.position.z);
+        aimDistance=Math.max(2.5,targetDelta.dot(damageDir));
+      }
+      const arrow=spawnArrow(off,aimDistance);
+      // updateArrows has always had logic to stop an arrow early if the target it
+      // was aimed at dies mid-flight, but nothing ever set this field, so that
+      // branch was dead.
+      arrow.expectedTarget=e||null;
+      if(e) {
+        // Resolve from the camera perspective, but delay the result by the
+        // same travel time as the visible arrow.
+        killed.add(e);
+        const target=new THREE.Vector3(e.position.x-camera.position.x,(e.userData.baseY-0.12)-camera.position.y,e.position.z-camera.position.z);
+        // Clamped to the arrow's own reach so the delay can never outlast the
+        // projectile the player is watching.
+        const distance=Math.min(Math.max(0,target.dot(damageDir)),BOW_RANGE);
+        pendingDamage.push({enemy:e,damage:arrow.damage,time:distance/ARROW_SPEED});
+      }
+    }
+    updateHud();
+  }
+
+  // ── HUD ──────────────────────────────────────────────────────────────────────
+  function updateHud() {
+    if (hudState.health!==player.health) {
+      hudState.health=player.health;
+      hpValEl.textContent=player.health;
+      hpFill.style.width=player.health+'%';
+      hpFill.style.background=player.health>50?'linear-gradient(90deg,#66cc77,#44bb55)':player.health>25?'linear-gradient(90deg,#ddaa33,#cc8822)':'linear-gradient(90deg,#ff5555,#ff3030)';
+      if (screenFx) screenFx.style.setProperty('--danger-opacity',Math.max(0,(40-player.health)/40*0.6).toFixed(3));
+    }
+    if (hudState.ammo!==player.ammo) {
+      hudState.ammo=player.ammo;
+      bowAmmoValEl.textContent=player.ammo;
+      amFill.style.width=(player.ammo/player.maxAmmo*100)+'%';
+    }
+    if (hudState.armorTier!==player.armorTier) {
+      hudState.armorTier=player.armorTier;
+      armorValEl.textContent=player.armorTier>0
+        ?`${ARMOR_NAMES[player.armorTier]} ${Math.round(ARMOR_ABSORB[player.armorTier]*100)}%`
+        :'None';
+      syncTierTrack(armorTierTrack, player.armorTier);
+    }
+    if (hudState.gunTier!==player.gunTier) {
+      hudState.gunTier=player.gunTier;
+      if (bowRankEl) bowRankEl.textContent=bowTierBadges[Math.min(player.gunTier,bowTierBadges.length-1)]||'I';
+      syncTierTrack(bowTierTrack, player.gunTier);
+      applyBowTier(player.gunTier);
+      // The held bow is re-skinned on upgrade, so the name has to follow even
+      // when the weapon mode has not changed -- otherwise you pick up a Void Bow
+      // and the HUD keeps insisting you are holding a Shortbow.
+      if (weaponNameEl&&player.weaponMode===2) weaponNameEl.textContent=bowNames[Math.min(player.gunTier,bowNames.length-1)];
+    }
+    if (hudState.weaponMode!==player.weaponMode) {
+      hudState.weaponMode=player.weaponMode;
+      if (weaponNameEl) weaponNameEl.textContent=player.weaponMode===1?'Dagger':bowNames[Math.min(player.gunTier,bowNames.length-1)];
+    }
+    if (hudState.level!==currentLevel||hudState.kills!==player.levelKills) {
+      hudState.level=currentLevel;
+      hudState.kills=player.levelKills;
+      killValEl.textContent=`Level ${currentLevel+1} \u2014 Kills ${player.levelKills}`;
+    }
+    if (hudState.hasKey!==player.hasKey) {
+      hudState.hasKey=player.hasKey;
+      if (player.hasKey){keyStatus.textContent='KEY \u2713';keyStatus.className='have';}
+      else{keyStatus.textContent='NO KEY';keyStatus.className='missing';}
+    }
+  }
+
+  function sanitizeLeaderboardName(name) {
+    const cleaned=(name||'').trim().replace(/\s+/g,' ');
+    return (cleaned||'PLAYER').slice(0,12).toUpperCase();
+  }
+
+  function leaderboardMessage(text, isError=false) {
+    if (!lbMsg) return;
+    lbMsg.textContent=text;
+    lbMsg.style.color=isError ? '#d88f78' : '#bd9865';
+  }
+
+  function renderLeaderboard(entries) {
+    const populate=(target, listEntries, emptyText)=>{
+      if (!target) return;
+      target.innerHTML='';
+      if (!listEntries.length) {
+        const empty=document.createElement('li');
+        empty.style.gridTemplateColumns='1fr';
+        empty.textContent=emptyText;
+        target.appendChild(empty);
+        return;
+      }
+      listEntries.forEach((entry,index)=>{
+        const row=document.createElement('li');
+        const name=document.createElement('strong'); name.textContent=`${index+1}. ${entry.name}`;
+        const kills=document.createElement('span'); kills.textContent=`Kills ${entry.kills}`;
+        const upgrades=document.createElement('span'); upgrades.textContent=`Upgrades ${entry.upgrades}`;
+        const levels=document.createElement('span'); levels.textContent=`Levels ${entry.levels}`;
+        row.append(name,kills,upgrades,levels);
+        target.appendChild(row);
+      });
+    };
+    populate(lbList, entries, 'No scores yet. Be the first.');
+    populate(startLbList, entries.slice(0,5), 'No scores yet.');
+  }
+
+  function normalizeLeaderboardEntry(entry) {
+    return {
+      name: sanitizeLeaderboardName(entry?.name),
+      kills: Math.max(0, Math.floor(entry?.kills||0)),
+      upgrades: Math.max(0, Math.floor(entry?.upgrades||0)),
+      levels: Math.max(1, Math.floor(entry?.levels||1)),
+    };
+  }
+
+  function sortLeaderboardEntries(entries) {
+    return [...entries].sort((a,b)=>
+      (b.kills-a.kills)
+      || (b.levels-a.levels)
+      || (b.upgrades-a.upgrades)
+      || a.name.localeCompare(b.name)
+    );
+  }
+
+  function readLocalLeaderboard() {
+    try {
+      const raw=localStorage.getItem(LEADERBOARD_KEY);
+      if (!raw) return [];
+      const parsed=JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeLeaderboardEntry);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeLocalLeaderboard(entries) {
+    const normalized=entries.map(normalizeLeaderboardEntry);
+    const sorted=sortLeaderboardEntries(normalized).slice(0, LEADERBOARD_LIMIT);
+    localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(sorted));
+    return sorted;
+  }
+
+  async function loadLeaderboard() {
+    leaderboardEntries=sortLeaderboardEntries(readLocalLeaderboard()).slice(0, LEADERBOARD_LIMIT);
+    leaderboardLoaded=true;
+    renderLeaderboard(leaderboardEntries);
+    if (!pendingLeaderboardPayload) leaderboardMessage('Top runs loaded.');
+  }
+
+  async function submitLeaderboardEntry(payload) {
+    const body=normalizeLeaderboardEntry(payload);
+    const existing=readLocalLeaderboard();
+    leaderboardEntries=writeLocalLeaderboard([...existing, body]);
+    renderLeaderboard(leaderboardEntries);
+    leaderboardMessage('Score saved.');
+  }
+
+  // ── Doom face ────────────────────────────────────────────────────────────────
+  // ── Game state ───────────────────────────────────────────────────────────────
+  function setGameState(ns, payload={}) {
+    if (gameState===ns) return;
+    gameState=ns;
+    if (ns!=='playing'){gameActive=false;move.fwd=move.bck=move.lft=move.rgt=false;}
+    if ((ns==='start'||ns==='gameover')&&document.pointerLockElement===renderer.domElement) document.exitPointerLock();
+    if (ns==='playing'){gameActive=true;startPr.classList.add('hidden');stateOv.classList.add('hidden');return;}
+    if (ns==='start'){startPr.classList.remove('hidden');stateOv.classList.add('hidden');statusEl.textContent=`Level ${currentLevel+1} — click to engage`;return;}
+    startPr.classList.add('hidden'); stateOv.classList.remove('hidden'); stBtn.style.display='';
+    stContinue.hidden=true;
+    if (leaderboardWrap) leaderboardWrap.style.display='none';
+    if (ns==='level-complete'){
+      // Clearing level 15 is the end of the designed campaign, so it gets its own
+      // beat rather than sliding silently into the endless run.
+      const finishedCampaign=currentLevel+1===CORE_LEVELS;
+      stTitle.textContent=finishedCampaign?'The Dreadkeep Falls':`Level ${currentLevel+1} Clear`;
+      stStats.textContent=payload.stats||'';
+      stBtn.style.display='none';
+      statusEl.textContent=finishedCampaign?'Beyond the keep\u2026':'Preparing next level\u2026';
+      return;
+    }
+    if (ns==='gameover'){
+      if (leaderboardWrap) leaderboardWrap.style.display='block';
+      sfx.gameOver();
+      stTitle.textContent='You Died';
+      const levelCount=currentLevel+1;
+      const upgradeCount=player.upgrades||0;
+      const contLine=runContinues>0?`\nContinues used: ${runContinues}`:'';
+      stStats.textContent=`Reached Level: ${levelCount}\nTotal Kills: ${player.campaignKills}\nUpgrades: ${upgradeCount}${contLine}\nKeep pushing — enemies grow\nhunger the deeper you go.`;
+      stBtn.textContent='New Run';
+      // Offer the checkpoint rather than sending an hour-long run back to level 1.
+      const ck=loadRun();
+      if (ck && ck.level>0) {
+        stContinue.hidden=false;
+        stContinue.textContent=`Continue \u2014 Level ${ck.level+1}`;
+      } else {
+        stContinue.hidden=true;
+      }
+      pendingLeaderboardPayload={name: lbName?.value||'', kills:player.campaignKills, upgrades:upgradeCount, levels:levelCount};
+      leaderboardMessage('Enter a name and save your score.');
+      if (!leaderboardLoaded) loadLeaderboard();
+      else renderLeaderboard(leaderboardEntries);
+      if (lbName) { lbName.value=sanitizeLeaderboardName(lbName.value||''); lbName.focus(); lbName.select(); }
+    }
+  }
+
+  function onLevelComplete() {
+    if (gameState!=='playing') return;
+    sfx.levelClear();
+    const tail=currentLevel+1===CORE_LEVELS
+      ? `You have broken the Dreadkeep.\nWhat lies past level ${CORE_LEVELS} answers to nothing\u2014\nno map, no mercy, no end.`
+      : `Level ${currentLevel+2} incoming\u2026`;
+    setGameState('level-complete',{stats:`Kills: ${player.levelKills}\nAmmo left: ${player.ammo}\n${tail}`});
+    advTimer=setTimeout(()=>{
+      currentLevel++;
+      loadLevel(currentLevel,true);
+      saveRun();   // checkpoint the state the player arrives with
+      setGameState('playing');
+      if (renderer.domElement.requestPointerLock&&document.pointerLockElement!==renderer.domElement)
+        try{renderer.domElement.requestPointerLock();}catch(_){}
+    },3000);
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────────────────
+  function setKey(code,down) {
+    if (code==='KeyW'||code==='ArrowUp')    move.fwd=down;
+    if (code==='KeyS'||code==='ArrowDown')  move.bck=down;
+    if (code==='KeyA'||code==='ArrowLeft')  move.lft=down;
+    if (code==='KeyD'||code==='ArrowRight') move.rgt=down;
+  }
+  function clearMovementInput() {
+    move.fwd=move.bck=move.lft=move.rgt=false;
+  }
+  function isTypingTarget(target) {
+    return target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target?.isContentEditable;
+  }
+  const gameControlKeys=new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','KeyR','KeyF','Digit1','Digit2','Escape']);
+
+  document.addEventListener('keydown',ev=>{
+    if (isTypingTarget(ev.target)) return;
+    if (!gameControlKeys.has(ev.code)) return;
+    if (ev.code!=='Escape') ev.preventDefault();
+    if (restartTimer) return;
+    if (gameState!=='playing') return;   // weapon/attack keys are in-game only
+    if (ev.code==='Digit1'&&!ev.repeat){setWeaponMode(2);return;}
+    if (ev.code==='Digit2'&&!ev.repeat){setWeaponMode(1);return;}
+    setKey(ev.code,true);
+    if (ev.code==='Space'){ev.preventDefault();if(!ev.repeat)jump();}
+    // F was listed in the on-screen controls and swallowed by gameControlKeys,
+    // but never dispatched anywhere -- the advertised stab simply did nothing.
+    if (ev.code==='KeyF'&&!ev.repeat) meleeAttack();
+    if (ev.code==='KeyR'&&!ev.repeat) startRestartCountdown();
+  });
+  document.addEventListener('keyup',ev=>{
+    if(ev.code==='KeyR'&&restartTimer){cancelRestartCountdown();return;}
+    if(gameControlKeys.has(ev.code)) setKey(ev.code,false);
+  });
+  window.addEventListener('blur',clearMovementInput);
+  document.addEventListener('mousemove',ev=>{
+    if (document.pointerLockElement!==renderer.domElement) return;
+    // Also gated on gameActive: pointer lock can still be held during the
+    // level-complete overlay and the restart countdown, where movement is frozen
+    // but the camera could previously still be spun around behind the screen.
+    if (!gameActive||gameState!=='playing') return;
+    player.yaw-=ev.movementX*LOOK_BASE*settings.sensitivity;
+    player.pitch-=ev.movementY*LOOK_BASE*settings.sensitivity*(settings.invertY?-1:1);
+    player.pitch=Math.max(-MAX_PITCH,Math.min(MAX_PITCH,player.pitch));
+  });
+  renderer.domElement.addEventListener('click',()=>{
+    if (gameState==='start') return;
+    if (document.pointerLockElement!==renderer.domElement){lockPointer();return;}
+    if(player.weaponMode===1) meleeAttack();
+    else if(player.ammo>0) shoot();
+  });
+  function applyAudioSettings() {
+    if (_musicGain) _musicGain.gain.value=boostedAudioGain(settings.music,MUSIC_GAIN_BOOST);
+    if (_sfxGain) _sfxGain.gain.value=boostedAudioGain(settings.sfx,SFX_GAIN_BOOST);
+    if (_ambGain) _ambGain.gain.value=boostedAudioGain(settings.ambient,AMBIENT_GAIN_BOOST);
+    saveSettings();
+  }
+  function syncSettingsUI() {
+    musicVolume.value=settings.music;
+    sfxVolume.value=settings.sfx;
+    ambientVolume.value=settings.ambient;
+    musicVolumeValue.value=musicVolumeValue.textContent=`${Math.round(settings.music*100)}%`;
+    sfxVolumeValue.value=sfxVolumeValue.textContent=`${Math.round(settings.sfx*100)}%`;
+    ambientVolumeValue.value=ambientVolumeValue.textContent=`${Math.round(settings.ambient*100)}%`;
+    resolutionSetting.value=String(settings.renderScale);
+    fogSetting.value=String(settings.fogDensity);
+    sensSetting.value=String(settings.sensitivity);
+    sensValue.textContent=Number(settings.sensitivity).toFixed(2);
+    invertYSetting.checked=!!settings.invertY;
+    pixelSetting.checked=!!settings.pixelated;
+    pixelRatioSetting.value=String(settings.pixelRatio);
+    aaSetting.value=String(settings.aa);
+    shadowSetting.value=String(settings.shadows?(settings.shadowQuality||2):0);
+    bloomSetting.checked=!!settings.bloom;
+    lightBudgetSetting.value=String(settings.lightBudget);
+    frameCapSetting.value=String(settings.frameCap);
+  }
+  syncSettingsUI();
+  [musicVolume,sfxVolume,ambientVolume].forEach(input=>input.addEventListener('input',()=>{
+    settings.music=Number(musicVolume.value);
+    settings.sfx=Number(sfxVolume.value);
+    settings.ambient=Number(ambientVolume.value);
+    syncSettingsUI(); applyAudioSettings();
+  }));
+  resolutionSetting.addEventListener('change',()=>{settings.renderScale=Number(resolutionSetting.value);applyGraphicsSettings();});
+  fogSetting.addEventListener('change',()=>{settings.fogDensity=Number(fogSetting.value);applyGraphicsSettings();});
+  sensSetting.addEventListener('input',()=>{
+    settings.sensitivity=Number(sensSetting.value);
+    sensValue.textContent=settings.sensitivity.toFixed(2);
+    saveSettings();
+  });
+  invertYSetting.addEventListener('change',()=>{settings.invertY=invertYSetting.checked;saveSettings();});
+  pixelSetting.addEventListener('change',()=>{
+    settings.pixelated=pixelSetting.checked;
+    // The crunchy look and smoothing are mutually exclusive — turning one on relaxes the other.
+    if (settings.pixelated){ settings.aa='off'; settings.pixelRatio=Math.min(1,settings.pixelRatio); }
+    syncSettingsUI(); applyGraphicsSettings();
+  });
+  pixelRatioSetting.addEventListener('change',()=>{
+    settings.pixelRatio=Number(pixelRatioSetting.value);
+    if (settings.pixelRatio>1&&settings.pixelated){ settings.pixelated=false; }
+    syncSettingsUI(); applyGraphicsSettings();
+  });
+  aaSetting.addEventListener('change',()=>{
+    settings.aa=aaSetting.value;
+    if (settings.aa!=='off'&&settings.pixelated){ settings.pixelated=false; }
+    syncSettingsUI(); applyGraphicsSettings();
+  });
+  shadowSetting.addEventListener('change',()=>{
+    const q=Number(shadowSetting.value);
+    settings.shadows=q>0; settings.shadowQuality=q>0?q:settings.shadowQuality;
+    applyGraphicsSettings();
+  });
+  bloomSetting.addEventListener('change',()=>{settings.bloom=bloomSetting.checked;applyGraphicsSettings();});
+  lightBudgetSetting.addEventListener('change',()=>{settings.lightBudget=Number(lightBudgetSetting.value);applyGraphicsSettings();});
+  frameCapSetting.addEventListener('change',()=>{settings.frameCap=Number(frameCapSetting.value);saveSettings();});
+  settingsToggle.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    const closing=!settingsPanel.hidden;
+    settingsPanel.hidden=!settingsPanel.hidden;
+    settingsToggle.setAttribute('aria-expanded',String(!settingsPanel.hidden));
+    // If user just closed via the toggle button, re-enable the start button visually
+    if (closing) startBtn.focus();
+  });
+  settingsPanel.addEventListener('click',ev=>ev.stopPropagation());
+  // stopPropagation keeps game controls from firing while adjusting settings, but
+  // it also swallowed Escape without the panel implementing the conventional
+  // close-on-Escape itself, so a keyboard user had to Tab all the way to "Done".
+  settingsPanel.addEventListener('keydown',ev=>{
+    if (ev.key==='Escape'&&!settingsPanel.hidden) {
+      settingsPanel.hidden=true;
+      settingsToggle.setAttribute('aria-expanded','false');
+      settingsToggle.focus();
+    }
+    ev.stopPropagation();
+  });
+
+  // ── Updates ────────────────────────────────────────────────────────────────
+  // window.gameUpdater only exists under Electron (see electron/preload.js), so
+  // the whole section stays hidden in a plain browser rather than offering a
+  // button that could never do anything.
+  {
+    const updateSection=document.getElementById('updateSection');
+    const updateBtn=document.getElementById('updateBtn');
+    const updateStatus=document.getElementById('updateStatus');
+    const bridge=window.gameUpdater;
+    if (bridge && updateSection) {
+      let version='', busy=false;
+      const say=(text,isError)=>{
+        updateStatus.textContent=text;
+        updateStatus.classList.toggle('is-error',Boolean(isError));
+      };
+      const rest=(pending)=>{
+        busy=false;
+        updateBtn.disabled=false;
+        updateBtn.classList.toggle('has-update',Boolean(pending));
+        updateBtn.textContent=pending?`Update to v${pending}`:'Check for updates';
+        if (pending) say(`Version ${pending} is available — you have v${version}.`);
+      };
+      bridge.state().then(s=>{
+        version=s.version||'';
+        updateSection.hidden=false;
+        say(`Version ${version}`);
+        rest(s.pending);
+        // A build that cannot replace itself still gets the button — it falls
+        // back to opening the releases page, which beats a dead end — but say so
+        // rather than implying a restart will do it.
+        if (!s.supported) say(`Version ${version} — this build updates manually.`);
+      }).catch(()=>{ /* no updater: leave the section hidden */ });
+
+      bridge.onAvailable(v=>{ if(!busy) rest(v); });
+      bridge.onProgress(p=>{
+        if (p===null||p===undefined) return;
+        updateBtn.textContent=`Downloading ${p}%`;
+        say('Downloading the update — the game stays playable meanwhile.');
+      });
+
+      updateBtn.addEventListener('click',async ev=>{
+        ev.stopPropagation();
+        if (busy) return;
+        busy=true;
+        updateBtn.disabled=true;
+        updateBtn.classList.remove('has-update');
+        updateBtn.textContent='Checking…';
+        say('Contacting GitHub…');
+        let res;
+        try {
+          res=await bridge.check();
+        } catch (err) {
+          res={state:'error',message:String(err&&err.message||err)};
+        }
+        switch (res.state) {
+          case 'up-to-date':
+            rest(null);
+            say(`Version ${res.version} — you're up to date.`);
+            break;
+          case 'installing':
+            // The app is on its way out; leave the button frozen so a second
+            // click can't race the restart.
+            updateBtn.textContent='Restarting…';
+            say(`Installing v${res.version}…`);
+            break;
+          case 'ready':
+            // Downloaded, restart declined. autoInstallOnAppQuit applies it later.
+            rest(null);
+            updateBtn.textContent='Restart to finish';
+            say(`Version ${res.version} installs the next time you quit.`);
+            break;
+          case 'manual':
+            rest(null);
+            say(`Version ${res.version} is available — download it from the releases page.`);
+            break;
+          case 'busy':
+            rest(null);
+            say('A check is already running.');
+            break;
+          default:
+            rest(null);
+            say(res.message?`Update check failed: ${res.message}`:'Update check failed.',true);
+        }
+      });
+    }
+  }
+  settingsDone.addEventListener('click',ev=>{
+    ev.stopPropagation(); settingsPanel.hidden=true; settingsToggle.setAttribute('aria-expanded','false');
+  });
+  // Resume from the last checkpoint: rebuild the level the player entered and
+  // restore the gear/health/ammo they had on arrival. The level they died on is
+  // replayed -- the run is not handed back for free.
+  stContinue.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    const ck=loadRun();
+    if(!ck){ stContinue.hidden=true; return; }
+    if (advTimer){clearTimeout(advTimer);advTimer=null;}
+    if (restartStepTimer){clearInterval(restartStepTimer);restartStepTimer=null;}
+    restartTimer=null; restartCountdown.hidden=true;
+    _stopMusic();
+    runContinues=ck.continues+1;
+    currentLevel=ck.level;
+    Object.assign(player,{
+      health:ck.health, ammo:ck.ammo, gunTier:ck.gunTier, armorTier:ck.armorTier,
+      campaignKills:ck.campaignKills, upgrades:ck.upgrades,
+      levelKills:0, hasKey:false, recoil:0, shootCd:0, meleeCd:0, weaponMode:2,
+      dmgTimer:0, moving:false, y:0, vy:0, grounded:true,
+    });
+    muzzleLight.intensity=0; shake.sT=shake.hT=0;
+    hFlash.style.opacity=sFlash.style.opacity=pkFlash.style.opacity='0';
+    pendingLeaderboardPayload=null;
+    stateOv.classList.add('hidden');
+    stContinue.hidden=true;
+    _frameErrors=0;
+    loadLevel(currentLevel,true);
+    saveRun();
+    setGameState('playing');
+    lockPointer();
+  });
+  startBtn.addEventListener('click',ev=>{ev.stopPropagation();if(!settingsPanel.hidden){settingsPanel.hidden=true;settingsToggle.setAttribute('aria-expanded','false');return;}lockPointer();});
+  stBtn.addEventListener('click',resetGame);
+  lbForm?.addEventListener('submit',async ev=>{
+    ev.preventDefault();
+    if (!pendingLeaderboardPayload) {
+      leaderboardMessage('No run is ready to save yet.', true);
+      return;
+    }
+    pendingLeaderboardPayload.name=lbName?.value||'';
+    try {
+      await submitLeaderboardEntry(pendingLeaderboardPayload);
+      pendingLeaderboardPayload=null;
+    } catch (error) {
+      leaderboardMessage('Save failed in this browser session.', true);
+    }
+  });
+
+  // ── Pointer lock ─────────────────────────────────────────────────────────────
+  let plFbT=null;
+  function lockPointer() {
+    if (gameState!=='start'&&gameState!=='playing') return;
+    gameActive=true;          // force-activate before setGameState's early-return guard fires
+    setGameState('playing'); startPr.classList.add('hidden'); statusEl.textContent='Engaging\u2026';
+    initAudio();
+    if (plFbT) clearTimeout(plFbT);
+    plFbT=setTimeout(()=>{if(document.pointerLockElement!==renderer.domElement) statusEl.textContent='Pointer lock blocked \u2014 movement active, click canvas to fire.';},280);
+    try{if(renderer.domElement.requestPointerLock){pendingLock=true;renderer.domElement.requestPointerLock();}}catch(_){pendingLock=false;}
+  }
+
+  // Losing pointer lock pauses the game, so it should pause the audio too. Only
+  // tab-hide used to suspend the context, so alt-tabbing to another window left
+  // the music and ambient timers audibly running behind a paused game.
+  document.addEventListener('pointerlockchange',()=>{
+    const locked=document.pointerLockElement===renderer.domElement;
+    if (locked){pendingLock=false;setGameState('playing');if(AC&&AC.state==='suspended')AC.resume();if(plFbT){clearTimeout(plFbT);plFbT=null;}return;}
+    if (pendingLock) return;
+    pendingLock=false;
+    if (gameState==='playing'&&player.health>0){gameActive=false;clearMovementInput();startPr.classList.remove('hidden');statusEl.textContent='Click to resume';if(AC)AC.suspend();}
+  });
+  // Failing to acquire the lock must leave the "click to resume" prompt UP. This
+  // used to hide it, which is exactly backwards: the level-complete timer
+  // re-locks from a setTimeout with no user gesture, so alt-tabbing during a
+  // level transition reliably lands you in-game with dead mouse-look and no
+  // on-screen cue that clicking would fix it.
+  document.addEventListener('pointerlockerror',()=>{
+    pendingLock=false;
+    setGameState('playing');
+    startPr.classList.remove('hidden');
+    statusEl.textContent='Click to resume';
+  });
+
+  // ── Reset ────────────────────────────────────────────────────────────────────
+  function startRestartCountdown() {
+    if (gameState!=='playing'||player.health<=0||restartTimer) return;
+    clearMovementInput();
+    gameActive=false;
+    pendingLock=false;
+    let remaining=3;
+    restartCountdownValue.textContent=remaining;
+    restartCountdown.style.setProperty('--countdown-progress','0%');
+    restartCountdown.hidden=false;
+    statusEl.textContent='Restarting…';
+    restartStepTimer=setInterval(()=>{
+      remaining--;
+      restartCountdownValue.textContent=Math.max(0,remaining);
+      restartCountdown.style.setProperty('--countdown-progress',`${(3-remaining)*33.333}%`);
+      if (remaining<=0) {
+        clearInterval(restartStepTimer);
+        restartStepTimer=null;
+        restartTimer=null;
+        restartCountdown.hidden=true;
+        resetGame();
+      }
+    },1000);
+    restartTimer=restartStepTimer;
+  }
+
+  function cancelRestartCountdown() {
+    if (!restartTimer) return;
+    clearInterval(restartStepTimer);
+    restartStepTimer=null;
+    restartTimer=null;
+    restartCountdown.hidden=true;
+    gameActive=true;
+    if (document.pointerLockElement===renderer.domElement) {
+      startPr.classList.add('hidden');
+      statusEl.textContent='Engaged';
+    } else {
+      startPr.classList.remove('hidden');
+      statusEl.textContent='Click to resume';
+    }
+  }
+
+  function resetGame() {
+    if (restartStepTimer){clearInterval(restartStepTimer);restartStepTimer=null;}
+    restartTimer=null;
+    restartCountdown.hidden=true;
+    if (advTimer){clearTimeout(advTimer);advTimer=null;}
+    _stopMusic();
+    currentLevel=0; pendingLock=false;
+    // A new run must not inherit the dead run's checkpoint.
+    clearRun(); runContinues=0;
+    Object.assign(player,{x:1.5,z:1.5,yaw:0,pitch:0,health:100,ammo:30,hasKey:false,
+      levelKills:0,campaignKills:0,recoil:0,bobPhase:0,shootCd:0,meleeCd:0,weaponMode:2,dmgTimer:0,moving:false,gunTier:0,armorTier:0,upgrades:0,y:0,vy:0,grounded:true});
+    muzzleLight.intensity=0; shake.sT=shake.hT=0;
+    hFlash.style.opacity=sFlash.style.opacity=pkFlash.style.opacity='0';
+    // Ensure overlays are in the right state before setting game state
+    stateOv.classList.add('hidden');
+    startPr.classList.remove('hidden');
+    pendingLeaderboardPayload=null;
+    leaderboardMessage('');
+    gameState='';  // force setGameState to not early-exit
+    loadLevel(0,false); setGameState('start'); onResize(true); updateHud();
+  }
+
+  // ── Resize ───────────────────────────────────────────────────────────────────
+  function onResize(force=false) {
+    const w=Math.max(1,Math.floor(gc.clientWidth)), h=Math.max(1,Math.floor(gc.clientHeight));
+    if (!force&&w===lastVW&&h===lastVH) return;
+    lastVW=w;lastVH=h;
+    camera.aspect=w/h;camera.updateProjectionMatrix();
+    const rw=Math.max(160,Math.round(w/settings.renderScale)), rh=Math.max(120,Math.round(h/settings.renderScale));
+    renderer.setSize(rw,rh,false);
+    // composer.setSize resizes every pass (incl. bloom) at the renderer's pixel
+    // ratio; do NOT also call bloomPass.setSize(rw,rh) — that would re-size bloom to
+    // the un-scaled resolution and break it whenever Sharpness (pixelRatio) > 1.
+    if (composer){ composer.setSize(rw,rh); }
+    renderer.domElement.style.width=w+'px';renderer.domElement.style.height=h+'px';
+  }
+  function applyGraphicsSettings() {
+    renderer.domElement.style.imageRendering=settings.pixelated?'pixelated':'auto';
+    scene.fog.density=settings.fogDensity;
+    // Shadows: toggle the map and let the light-budget promotion do the per-light work.
+    renderer.shadowMap.enabled=!!settings.shadows;
+    TORCH_LIGHT_BUDGET=settings.lightBudget||14;
+    TORCH_SHADOW_BUDGET=settings.shadows?(settings.shadowQuality||0):0;
+    // Ensure the current level's geometry has receiver/caster flags when shadows are
+    // switched on after the level was already built.
+    if (settings.shadows) applyShadowFlags();
+    renderer.setPixelRatio(settings.pixelRatio||1);
+    // AA sample count is baked into the composer's targets, so a change rebuilds it.
+    buildComposer();
+    if (bloomPass) bloomPass.enabled=!!settings.bloom;
+    updateTorchLightBudget();
+    onResize(true);
+    saveSettings();
+  }
+  const ro=new ResizeObserver(()=>requestAnimationFrame(()=>onResize(true)));
+  ro.observe(gc);
+
+  // ── Main loop ────────────────────────────────────────────────────────────────
+  // Frame cap. On a mixed-refresh multi-monitor desktop the browser does not
+  // reliably pace rAF to the display the window is actually on: measured on this
+  // desktop at 244Hz on a 60Hz panel (three of every four frames rendered and
+  // then discarded, so what reaches your eye is of arbitrary age) and at 59Hz on
+  // a 144Hz one, and the figures move between runs. The visible result is that
+  // mouse feel changes depending on which monitor you dragged the game to.
+  // Pacing off the clock instead of off the display makes the feel identical
+  // everywhere, at the cost of the top end on a high-refresh panel. That is a
+  // bad trade for the single-monitor majority, who never hit this, so the cap
+  // is opt-in: the default of 0 follows the display exactly as before.
+  //
+  // The deadline is slackened by a fraction of a frame because a frame that
+  // arrives a hair early must still be taken. Testing exactly on the deadline
+  // beats badly whenever the cap and the refresh rate are close: at 60 on a
+  // 60Hz panel, sub-millisecond jitter made frames miss by a whisker and wait a
+  // whole extra vsync, measured as 54.6fps with 33ms stalls -- worse than not
+  // capping at all. The accumulator below still advances by exactly one frame,
+  // so the slack costs nothing in average rate.
+  const FRAME_SLOP=0.12;
+  let lastFrameAt=-Infinity;
+
+  // Wrapper so a throw anywhere in the frame is caught and SHOWN. The loop itself
+  // survives an exception today (rAF for the next frame is queued before the body
+  // runs), but nothing rendered afterwards, so the player got a frozen picture,
+  // no message, and an error only visible in a devtools console they do not have.
+  // Repeated failures stop the loop rather than spraying the same error at 60Hz.
+  let _frameErrors=0, _frameDead=false;
+  function animate() {
+    if (_frameDead) return;
+    requestAnimationFrame(animate);
+    try { animateFrame(); }
+    catch (err) {
+      console.error('Frame error:',err);
+      if (++_frameErrors>=3) { _frameDead=true; reportFatal('The game hit an unexpected error.'); }
+    }
+  }
+  // A lost GPU context is a normal event (driver reset, laptop GPU switch,
+  // sleep/resume) and there was no listener at all: the canvas would simply stop
+  // updating with no explanation. Preventing the default event is what makes
+  // restoration possible rather than permanent.
+  renderer.domElement.addEventListener('webglcontextlost',ev=>{
+    ev.preventDefault();
+    _frameDead=true;
+    reportFatal('The graphics context was lost.');
+  },false);
+  renderer.domElement.addEventListener('webglcontextrestored',()=>{
+    // Rebuilding every generated texture and material from here is not something
+    // this codebase is structured for, so tell the player plainly instead of
+    // pretending to recover and rendering a broken scene.
+    stStats.textContent='The graphics context was lost and restored.\nReload to continue.';
+  },false);
+
+  window.addEventListener('error',ev=>{
+    console.error('Uncaught error:',ev.error||ev.message);
+  });
+  window.addEventListener('unhandledrejection',ev=>{
+    console.error('Unhandled promise rejection:',ev.reason);
+  });
+
+  function reportFatal(msg){
+    try{
+      gameActive=false;
+      stateOv.classList.remove('hidden');
+      stTitle.textContent='Something went wrong';
+      stStats.textContent=msg+'\nReload to start a new run.';
+      stBtn.style.display='';
+      stBtn.textContent='Reload';
+      stBtn.onclick=()=>location.reload();
+      if(document.pointerLockElement) document.exitPointerLock();
+    }catch(_){ /* the overlay itself is broken; nothing left to try */ }
+  }
+  function animateFrame() {
+    // Do not spend CPU/GPU updating a hidden tab. The next animation frame
+    // resumes normally when the page becomes visible again.
+    if (document.hidden) return;
+    const frameMinMs=settings.frameCap>0?1000/settings.frameCap:0;
+    const frameNow=performance.now(), sinceLast=frameNow-lastFrameAt;
+    if (sinceLast<frameMinMs*(1-FRAME_SLOP)) return;
+    // Advance by whole frames so the cadence does not drift, but resync after a
+    // stall (alt-tab, level load) rather than trying to catch up on lost frames.
+    // Uncapped and post-stall both just take the current time.
+    lastFrameAt=(frameMinMs===0||sinceLast>frameMinMs*2)?frameNow:lastFrameAt+frameMinMs;
+    // getDelta is only called on frames we actually run, so it still returns the
+    // true wall-clock gap and every dt-scaled system stays correctly timed.
+    const dt=Math.min(clock.getDelta(),0.05);
+    const elapsed=performance.now()*0.001;
+    
+    // FPS counter
+    fpsFrames++;
+    if(performance.now() - fpsLastTime >= 1000) {
+      fpsCounter.textContent = `FPS: ${fpsFrames}`;
+      fpsFrames = 0;
+      fpsLastTime = performance.now();
+    }
+    
+    if (player.shootCd>0) player.shootCd=Math.max(0,player.shootCd-dt);
+    if (player.meleeCd>0) player.meleeCd=Math.max(0,player.meleeCd-dt);
+    if (player.dmgTimer>0) player.dmgTimer=Math.max(0,player.dmgTimer-dt);
+    if (muzzleLight.intensity>0) muzzleLight.intensity=Math.max(0,muzzleLight.intensity-dt*38);
+    if (gameState==='playing'&&gameActive&&player.health>0) {
+      updateMovement(dt); updateEnemies(dt,elapsed); updateEnemySpells(dt,elapsed); updatePickups(dt,elapsed); updateExit(elapsed);
+      // Footstep sounds while moving
+      if(player.moving){_stepAccum+=dt;if(_stepAccum>_nextStep){_stepAccum=0;_nextStep=0.34+Math.random()*0.08;sfx.footstep();}}
+      else _stepAccum=0.2;
+    }
+    // Arrows and their delayed damage are combat, so they stop when combat does.
+    // Previously they kept resolving for up to ~2s after death or after the level
+    // was declared complete, landing kills behind the results screen -- and the
+    // level-complete stats string was already rendered, so those kills silently
+    // never showed up in it.
+    if (gameState==='playing'&&player.health>0) { updateArrows(dt); updatePendingDamage(dt); }
+    updateGibs(dt); updateCamera(dt); updatePlayerTorch(elapsed,dt); updateHud();
+    atmosphereAccum+=dt;
+    if (atmosphereAccum>=1/30) { updateDampAtmosphere(elapsed,atmosphereAccum); atmosphereAccum=0; }
+    torchAccum+=dt;
+    if (torchAccum>=TORCH_DT) { updateTorches(elapsed,torchAccum); torchAccum=0; }
+    torchBudgetAccum+=dt;
+    if (torchBudgetAccum>=0.6) { updateTorchLightBudget(); torchBudgetAccum=0; }
+    _audioMoodAccum+=dt;
+    if(AC&&_musicFilter&&_audioMoodAccum>=0.25) {
+      _audioMoodAccum=0;
+      // Weight threat by what is actually hunting you: a guardian bearing down is
+      // not the same as three grunts, and the score should not pretend otherwise.
+      let threat=0, bossClose=false;
+      for(const e of enemies){
+        const d=e.userData;
+        if(!d.alive||d.state!=='chase') continue;
+        const dist=Math.hypot(e.position.x-player.x,e.position.z-player.z);
+        if(dist>=11) continue;
+        const near=1-dist/11;
+        const weight=d.type==='miniboss'?3.2:d.type==='goliath'?2.0:d.type==='brute'?1.4:1;
+        threat+=weight*near;
+        if(d.type==='miniboss'&&dist<9) bossClose=true;
+      }
+      const intensity=Math.min(1,threat/5), now=AC.currentTime;
+      // Open the score up as things close in: muffled and distant when you are
+      // alone, bright and present when you are being hunted.
+      _musicFilter.frequency.setTargetAtTime(MUSIC_FILTER_BASE+intensity*MUSIC_FILTER_RANGE,now,0.4);
+      _musicGain.gain.setTargetAtTime(
+        Math.min(1.6,boostedAudioGain(settings.music,MUSIC_GAIN_BOOST)*(1+intensity*0.18)),now,0.5);
+      // Dread drone swells in under the arrangement, harder when a guardian is on you.
+      if(_tensionGain){
+        const target=(intensity<0.12?0:0.030+intensity*0.075)*(bossClose?1.5:1)
+          *Math.max(0,Math.min(1,settings.music*2));
+        _tensionGain.gain.setTargetAtTime(target,now,0.8);
+      }
+      // Heartbeat under low health.
+      if(player.health>0&&player.health<=35&&gameState==='playing'){
+        const urgency=1-(player.health-1)/34;
+        _heartAccum+=0.25;
+        const interval=1.15-urgency*0.45;
+        if(_heartAccum>=interval){ _heartAccum=0; sfx.heartbeat(0.55+urgency*0.65); }
+      } else _heartAccum=0;
+    }
+    if (usingComposer()) composer.render(); else renderer.render(scene,camera);
+  }
+
+
+
+  // ── Boot ─────────────────────────────────────────────────────────────────────
+  // Pick the run back up where it was left. Quitting used to discard progress
+  // outright; a checkpoint from a previous session simply resumes here, and the
+  // start screen already announces which level you are about to enter.
+  (function bootRun(){
+    const ck=loadRun();
+    if (ck && ck.level>0) {
+      currentLevel=ck.level;
+      runContinues=ck.continues;
+      Object.assign(player,{
+        health:ck.health, ammo:ck.ammo, gunTier:ck.gunTier, armorTier:ck.armorTier,
+        campaignKills:ck.campaignKills, upgrades:ck.upgrades,
+      });
+      loadLevel(currentLevel,true);
+    } else {
+      loadLevel(0,false);
+    }
+  })();
+  setGameState('start');
+  onResize(true);
+  updateHud();
+  loadLeaderboard();
+  animate();
+
+}
+initSector93();

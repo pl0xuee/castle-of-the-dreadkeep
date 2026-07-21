@@ -2860,6 +2860,17 @@ function initSector93() {
     }
   }
 
+  // Decor collision heights.
+  //
+  // A jump peaks at JUMP_VELOCITY^2/(2*JUMP_GRAVITY) ~= 0.91 units. JUMP_MAX_Y is a
+  // headroom clamp, NOT the apex -- nothing ever reaches 1.6. canMoveTo lets you
+  // pass a collider once your jump is within 0.16 of its walkTop, so in practice
+  // ~1.06 is the tallest prop a player can get over or onto, and anything above
+  // that is a wall as far as movement is concerned.
+  //
+  // `h` therefore defaults to deliberately-unsurmountable. Any prop meant to be
+  // stepped over MUST pass its real height: a 0.7-unit gargoyle bust that inherits
+  // the default reads to the player as an invisible wall in the middle of a room.
   function addCircleCollider(x,z,r,h=1.8,walkTop=h) {
     decorColliders.push({type:'circle',x,z,r,h,walkTop});
   }
@@ -3588,7 +3599,8 @@ function initSector93() {
         capital.position.set(pos.x,1.67,pos.z);
         base.rotation.y=shaft.rotation.y=capital.rotation.y=angle;
         levelRoot.add(base,shaft,capital);
-        addCircleCollider(pos.x,pos.z,0.30);
+        // A real floor-to-capital column (top ~1.74) — deliberately unsurmountable.
+        addCircleCollider(pos.x,pos.z,0.30,1.8,1.8);
       } else if(type===1 && roomy) {
         addBarrel(pos.x,pos.z,angle);
       } else if(type===2 && roomy) {
@@ -3615,7 +3627,9 @@ function initSector93() {
           const eye=new THREE.Mesh(new THREE.SphereGeometry(0.022,5,4),eyeMat);
           eye.position.set(pos.x+ex,0.52,pos.z+0.14); levelRoot.add(eye);
         }
-        addCircleCollider(pos.x,pos.z,0.2);
+        // Plinth to horn tips is ~0.70. Without an explicit height this inherited
+        // the 1.8 default and became a knee-high statue you could not step over.
+        addCircleCollider(pos.x,pos.z,0.2,0.7,0.7);
       } else if(type===4 && roomy) {
         // Weapon rack — spears leaning on a real A-frame timber rail, tips aligned
         // to the leaning shafts (they used to float above and off-axis).
@@ -3644,7 +3658,10 @@ function initSector93() {
           tip.position.set(bx,0.46+Math.cos(lean)*0.54,spearBaseZ+Math.sin(lean)*0.54);
           tip.rotation.x=lean; levelRoot.add(tip);
         }
-        addBoxCollider(pos.x,pos.z,0.56,0.3,0,0.02);
+        // Rail and posts top out at 0.66; the leaning spearheads reach ~1.05 but
+        // are thin enough to brush past. Collide against the rack itself so it can
+        // be vaulted -- inheriting the 1.8 default made it a full-height wall.
+        addBoxCollider(pos.x,pos.z,0.56,0.3,0,0.02,0.7,0.7);
       } else if(type===6) {
         // Blood pool on floor
         const poolGeo=new THREE.CircleGeometry(0.18+rng(d+801)*0.14,8);

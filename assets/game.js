@@ -661,11 +661,8 @@ function initSector93() {
   const bowNames=['Shortbow','Longbow','Bone Bow','Shadow Bow','Hellfire Bow','Storm Bow','Void Bow'];
   const bowShots=['single shot','heavier draw','triple shot','cursed volley','hellfire burst','storm volley','void barrage'];
   const bowTierBadges=['I','II','III','IV','V','VI','VII'];
-  const armorNames=['No Armor','Leather Jerkin','Chain Mail','Runed Plate','Infernal Aegis','Wyrmguard Plate','Abyssal Aegis'];
-  const armorAbsorb=[0,0.12,0.2,0.28,0.36,0.43,0.49];
-
-  const ARMOR_NAMES=armorNames;
-  const ARMOR_ABSORB=armorAbsorb;
+  const ARMOR_NAMES=['No Armor','Leather Jerkin','Chain Mail','Runed Plate','Infernal Aegis','Wyrmguard Plate','Abyssal Aegis'];
+  const ARMOR_ABSORB=[0,0.12,0.2,0.28,0.36,0.43,0.49];
   // ── Run checkpoints ─────────────────────────────────────────────────────────
   // Nothing about a run was ever persisted, so dying on level 14 sent the player
   // back to level 1 with no gear -- discarding the better part of an hour -- and
@@ -2540,6 +2537,13 @@ function initSector93() {
   function walkSurfaceAt(x,z,r=0) {
     return decorInfoAt(x,z,r).walkTop;
   }
+  // canMoveTo and enemyCanMoveTo look near-identical but MUST NOT be merged. The
+  // player gets WALL_BUFFER added to its radius and clears props by jump height;
+  // enemies use the raw radius and step over by ENEMY_STEP_HEIGHT. Unifying them
+  // would either strip the player's wall buffer or hand enemies jump semantics,
+  // changing collision feel for one side. decorInfoAt runs the same overlap loop
+  // again for the standing-surface query -- keep all three in step if a new
+  // collider shape is ever added.
   function canMoveTo(x,z,r,jumpY=0) {
     const wallRadius=r+WALL_BUFFER;
     let decorBlock=0, walkTop=0;
@@ -2570,13 +2574,22 @@ function initSector93() {
       && !isWallAt(x,z-r)  &&!isWallAt(x,z+r)   &&!isWallAt(x-r,z) &&!isWallAt(x+r,z)
       && (decorBlock<=stepHeight || walkTop<=stepHeight+0.06);
   }
-  function hasLOS(ax,az,bx,bz) {
+  // Walk a segment sampling for walls. Three call sites re-derived this with three
+  // different, unexplained step sizes; the granularity each one needs is now an
+  // argument with the reason written down.
+  function wallAlong(ax,az,bx,bz,stepSize) {
     const dx=bx-ax, dz=bz-az, dist=Math.hypot(dx,dz);
-    if (dist<0.001) return true;
-    const steps=Math.max(2,Math.ceil(dist/0.14));
-    for (let i=1;i<steps;i++) { const t=i/steps; if (isWallAt(ax+dx*t,az+dz*t)) return false; }
-    return true;
+    if (dist<0.001) return false;
+    const steps=Math.max(2,Math.ceil(dist/stepSize));
+    for (let i=1;i<steps;i++) { const t=i/steps; if (isWallAt(ax+dx*t,az+dz*t)) return true; }
+    return false;
   }
+  // 0.14 is comfortably under a wall cell, which is all sight needs.
+  function hasLOS(ax,az,bx,bz) { return !wallAlong(ax,az,bx,bz,0.14); }
+  // Deliberately does NOT use wallAlong: it needs the index of the first hit so it
+  // can back off two samples, not just whether one exists. The 0.035 step is four
+  // times finer than hasLOS on purpose -- this decides where a visible projectile
+  // is spawned, so a coarse step would pop arrows through the wall you are hugging.
   function clampArrowOrigin(origin){
     const dx=origin.x-camera.position.x, dz=origin.z-camera.position.z;
     const distance=Math.hypot(dx,dz);

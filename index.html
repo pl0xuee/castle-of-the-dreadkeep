@@ -532,6 +532,15 @@ function initSector93() {
   // of them. Single-target power therefore lives entirely in ARROW_DMG, and it
   // must rise every tier -- when it did not, picking up the tier-2 and tier-4
   // bows actually halved your damage against brutes, goliaths and guardians.
+  // Arrow flight, and the hit range derived from it. These must stay tied
+  // together: the damage raycast in shoot() used to be built with no `far` at
+  // all (melee has always passed one), so the bow hit anything it could see --
+  // and `pendingDamage` scheduled the hit off the raw distance. Since an arrow
+  // only lives 1.35s at 22 u/s, any target past ~29.7 units died to an arrow
+  // that visibly expired in mid-air, on maps whose diagonal reaches 64.
+  const ARROW_SPEED = 22;
+  const ARROW_LIFE  = 1.35;
+  const BOW_RANGE   = ARROW_SPEED * ARROW_LIFE;
   const ARROW_DMG = [2, 3, 5, 7, 10, 14, 19];
   const SHOOT_CD  = [0.46, 0.40, 0.36, 0.32, 0.28, 0.25, 0.22];
   const AMMO_PICKUP = 14;
@@ -2985,7 +2994,7 @@ function initSector93() {
     if(Math.abs(xAxis.dot(fwd))<0.9999) ag.quaternion.setFromUnitVectors(xAxis,fwd);
     ag.position.copy(arrowOrigin).addScaledVector(fwd,0.04);
     scene.add(ag);
-    const arrow={mesh:ag,vel:fwd.clone().multiplyScalar(22),life:1.35,hitLife:0.55,hit:false,damage:ARROW_DMG[T]};
+    const arrow={mesh:ag,vel:fwd.clone().multiplyScalar(ARROW_SPEED),life:ARROW_LIFE,hitLife:0.55,hit:false,damage:ARROW_DMG[T]};
     arrows.push(arrow);
     if(arrows.length>72){
       const old=arrows.shift();
@@ -5677,7 +5686,16 @@ function initSector93() {
         d.acd=(d.bossAcd||ETYPES[d.type].acd)*0.8+Math.random()*0.35;
         return;
       }
-        if (dist<d.ar&&d.acd<=0&&player.health>0
+        // `sees` is required here for the same reason the ranged branch above
+        // requires it: hasClearAttackPath only tests decorColliders, never walls,
+        // so on its own it will happily approve a swing straight through stone.
+        // Any inside corner put an unseen enemy within reach of the player -- the
+        // nearest blocked-line-of-sight pair around a single solid cell is 0.885
+        // apart, inside every enemy's attack radius (1.05 to 1.6).
+        //
+        // This costs nothing: d.sees is recomputed every frame once dist < 2.2
+        // (see the LOS block above), and melee reach never exceeds 1.6.
+        if (dist<d.ar&&d.acd<=0&&player.health>0&&sees
           &&hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
         d.attackFlash=0.24;
         sfx.enemyAttack(d.type,e.position.x,e.position.z);
@@ -6061,7 +6079,7 @@ function initSector93() {
         .addScaledVector(camRight,off.x*0.25)
         .addScaledVector(camUp,off.y*0.25)
         .normalize();
-      const ray=new THREE.Raycaster(camera.position.clone(),damageDir);
+      const ray=new THREE.Raycaster(camera.position.clone(),damageDir,0,BOW_RANGE);
       const e=findArrowHit(ray,killed);
       let aimDistance=8;
       if(e){
@@ -6074,8 +6092,10 @@ function initSector93() {
         // same travel time as the visible arrow.
         killed.add(e);
         const target=new THREE.Vector3(e.position.x-camera.position.x,(e.userData.baseY-0.12)-camera.position.y,e.position.z-camera.position.z);
-        const distance=Math.max(0,target.dot(damageDir));
-        pendingDamage.push({enemy:e,damage:arrow.damage,time:distance/22});
+        // Clamped to the arrow's own reach so the delay can never outlast the
+        // projectile the player is watching.
+        const distance=Math.min(Math.max(0,target.dot(damageDir)),BOW_RANGE);
+        pendingDamage.push({enemy:e,damage:arrow.damage,time:distance/ARROW_SPEED});
       }
     }
     updateHud();
@@ -6295,6 +6315,9 @@ function initSector93() {
     if (ev.code==='Digit2'&&!ev.repeat){setWeaponMode(1);return;}
     setKey(ev.code,true);
     if (ev.code==='Space'){ev.preventDefault();if(!ev.repeat)jump();}
+    // F was listed in the on-screen controls and swallowed by gameControlKeys,
+    // but never dispatched anywhere -- the advertised stab simply did nothing.
+    if (ev.code==='KeyF'&&!ev.repeat) meleeAttack();
     if (ev.code==='KeyR'&&!ev.repeat) startRestartCountdown();
   });
   document.addEventListener('keyup',ev=>{
@@ -6505,7 +6528,17 @@ function initSector93() {
     pendingLock=false;
     if (gameState==='playing'&&player.health>0){gameActive=false;clearMovementInput();startPr.classList.remove('hidden');statusEl.textContent='Click to resume';}
   });
-  document.addEventListener('pointerlockerror',()=>{pendingLock=false;setGameState('playing');startPr.classList.add('hidden');});
+  // Failing to acquire the lock must leave the "click to resume" prompt UP. This
+  // used to hide it, which is exactly backwards: the level-complete timer
+  // re-locks from a setTimeout with no user gesture, so alt-tabbing during a
+  // level transition reliably lands you in-game with dead mouse-look and no
+  // on-screen cue that clicking would fix it.
+  document.addEventListener('pointerlockerror',()=>{
+    pendingLock=false;
+    setGameState('playing');
+    startPr.classList.remove('hidden');
+    statusEl.textContent='Click to resume';
+  });
 
   // ── Reset ────────────────────────────────────────────────────────────────────
   function startRestartCountdown() {

@@ -283,6 +283,8 @@
           <label class="setting-row"><span>Music volume</span><output id="musicVolumeValue" class="setting-value">100%</output><input id="musicVolume" type="range" min="0" max="1" step="0.01" /></label>
           <label class="setting-row"><span>Gameplay volume</span><output id="sfxVolumeValue" class="setting-value">100%</output><input id="sfxVolume" type="range" min="0" max="1" step="0.01" /></label>
           <label class="setting-row"><span>Ambient volume</span><output id="ambientVolumeValue" class="setting-value">100%</output><input id="ambientVolume" type="range" min="0" max="1" step="0.01" /></label>
+          <label class="setting-row"><span>Mouse sensitivity</span><output id="sensValue" class="setting-value">1.00</output><input id="sensSetting" type="range" min="0.2" max="3" step="0.05" /></label>
+          <label class="check-row"><input id="invertYSetting" type="checkbox" /> Invert vertical look</label>
         </div>
         <h3 style="margin-top:14px">Graphics</h3>
         <div class="settings-group">
@@ -389,6 +391,9 @@ function initSector93() {
   const ambientVolumeValue = document.getElementById('ambientVolumeValue');
   const resolutionSetting = document.getElementById('resolutionSetting');
   const fogSetting = document.getElementById('fogSetting');
+  const sensSetting = document.getElementById('sensSetting');
+  const sensValue = document.getElementById('sensValue');
+  const invertYSetting = document.getElementById('invertYSetting');
   const pixelSetting = document.getElementById('pixelSetting');
   const pixelRatioSetting = document.getElementById('pixelRatioSetting');
   const aaSetting = document.getElementById('aaSetting');
@@ -409,8 +414,18 @@ function initSector93() {
     shadowQuality:2,      // shadow-caster budget: 0=off, 1 Low, 2 Med, 3 High
     pixelRatio:1,         // sharpness multiplier on the internal buffer (0.75–2)
     lightBudget:14,       // max simultaneously-lit dynamic lights
-    frameCap:0            // 0 = follow the display; opt in to a cap only if pacing misbehaves
+    frameCap:0,           // 0 = follow the display; opt in to a cap only if pacing misbehaves
+    // Look controls. There was no sensitivity option at all: the scalars were
+    // hardcoded, so feel depended entirely on the player's mouse DPI. The two axes
+    // also used DIFFERENT scalars (0.0025 yaw vs 0.0022 pitch), which reads as
+    // vertical aim being subtly sluggish; they now share one base.
+    sensitivity:1.0,      // multiplier on the base look scalar
+    invertY:false         // invert vertical look
   };
+  const LOOK_BASE=0.0025;
+  // Snapshot before anything persisted is merged in, so validation has a clean
+  // value to fall back to per field.
+  const DEFAULT_SETTINGS=Object.freeze({...settings});
   try {
     const saved=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'null');
     if (saved) Object.assign(settings,saved);
@@ -424,6 +439,25 @@ function initSector93() {
       }
     }
   } catch(_) {}
+  // Persisted settings were merged in with a bare Object.assign and no validation,
+  // so a corrupt or hand-edited store could inject values the UI cannot produce.
+  // renderScale is the dangerous one: onResize divides by it, so a 0 yields
+  // Infinity, and setting a canvas dimension to Infinity collapses it to 0 -- a
+  // blank screen with no in-game way to recover. Clamp everything back into range.
+  (function validateSettings(){
+    const numeric={renderScale:[1,4],fogDensity:[0,0.6],pixelRatio:[0.5,3],
+                   lightBudget:[1,64],frameCap:[0,480],shadowQuality:[0,3],
+                   music:[0,1],sfx:[0,1],ambient:[0,1],sensitivity:[0.1,5]};
+    for (const [k,[lo,hi]] of Object.entries(numeric)) {
+      const v=settings[k];
+      if (typeof v!=='number'||!isFinite(v)||v<lo||v>hi) settings[k]=DEFAULT_SETTINGS[k];
+    }
+    for (const k of ['pixelated','shadows','v','invertY','bloom']) {
+      if (k in settings && typeof settings[k]!=='boolean' && typeof DEFAULT_SETTINGS[k]==='boolean')
+        settings[k]=DEFAULT_SETTINGS[k];
+    }
+    if (typeof settings.aa!=='string') settings.aa=DEFAULT_SETTINGS.aa;
+  })();
   // Keep the crunchy pixel look and anti-aliasing from fighting each other.
   if (settings.pixelated && (settings.aa!=='off' || settings.pixelRatio>1)) settings.pixelated=false;
   const saveSettings=()=>{try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));}catch(_) {}}
@@ -1988,10 +2022,16 @@ function initSector93() {
   const MUSIC_FILTER_BASE=1800, MUSIC_FILTER_RANGE=1500;
   const boostedAudioGain=(value,boost)=>Math.min(1.6,Math.max(0,value*boost));
 
+  let _audioFailNoted=false;
   function initAudio(){
     if(AC) { if(AC.state==='suspended') AC.resume(); _startMusic(); return; }
     try{ AC=new(window.AudioContext||window.webkitAudioContext)(); }
-    catch(e){ return; }
+    catch(e){
+      // Swallowing this made a real audio failure indistinguishable from muted
+      // sliders: every call site checks `if(AC)` and silently no-ops forever.
+      if(!_audioFailNoted){ _audioFailNoted=true; statusEl.textContent='Audio unavailable on this system'; }
+      return;
+    }
     // A safety limiter, not a compressor. The old -12dB/5:1 setting sat below the
     // level of ordinary gameplay, so it was gain-riding the whole mix constantly.
     // Now it only catches genuine peaks.
@@ -2110,7 +2150,7 @@ function initSector93() {
       const lp=AC.createBiquadFilter(); lp.type='lowpass';
       lp.frequency.value=Math.max(700,5200-dist*280);
       g.gain.value=level; g.connect(lp);
-      _connectSfx(lp,worldX);
+      _connectSfx(lp,worldX,worldZ);
       return g;
     }
     g.gain.value=level;
@@ -2118,9 +2158,19 @@ function initSector93() {
     return g;
   }
 
-  function _connectSfx(node,worldX=null){
+  function _connectSfx(node,worldX=null,worldZ=null){
     if(worldX!=null&&AC.createStereoPanner){
-      const pan=AC.createStereoPanner(); pan.pan.value=Math.max(-0.8,Math.min(0.8,(worldX-player.x)/6));
+      let lateral;
+      if(worldZ!=null){
+        // Project onto the camera's right vector (cos yaw, -sin yaw), matching the
+        // strafe basis in updateMovement, so panning follows where the player is
+        // FACING. Panning on raw world X meant a sound directly behind you was
+        // indistinguishable from one directly ahead at the same lateral offset.
+        const dx=worldX-player.x, dz=worldZ-player.z;
+        lateral=dx*Math.cos(player.yaw)-dz*Math.sin(player.yaw);
+      } else lateral=worldX-player.x;
+      const pan=AC.createStereoPanner();
+      pan.pan.value=Math.max(-0.8,Math.min(0.8,lateral/6));
       node.connect(pan); pan.connect(_sfxGain); return;
     }
     node.connect(_sfxGain);
@@ -2129,6 +2179,22 @@ function initSector93() {
   // A volley can land up to 9 arrows at once (one per ray). Without this, every
   // one of them would fire a full-volume hit sound on the same frame.
   let _lastHitT=-1, _hitStack=0;
+  // Generalised version of the collapse hit() already did for arrow impacts.
+  // Simultaneous events were just as reachable in three other places and had no
+  // guard at all: being swarmed fires a full-detail enemyAttack AND hurt per
+  // attacker in the same frame, and a tier-6 volley seeks nine different enemies,
+  // so it can one-shot a hound pack and play nine undamped death screeches at
+  // once. Both are core designed states, not edge cases.
+  const _sfxStacks=Object.create(null);
+  function _stackAtten(key,window=0.07,falloff=0.85,floor=0.22){
+    if(!AC) return 0;
+    const t=AC.currentTime;
+    const s=_sfxStacks[key]||(_sfxStacks[key]={t:-1,n:0});
+    if(t-s.t<window) s.n++; else s.n=0;
+    s.t=t;
+    const a=1/(1+s.n*falloff);
+    return a<floor?0:a;
+  }
 
   const sfx={
     // Fires several times a second, so it has to be short and modest. The old one
@@ -2203,8 +2269,12 @@ function initSector93() {
     },
     hurt(){
       if(!AC) return;
-      _duck(0.55,0.06,0.34);
-      const t=AC.currentTime, mg=_o(0.40);
+      // Being surrounded put several attackers off cooldown on the same frame,
+      // each firing a full-volume crunch plus its own duck re-trigger.
+      const at=_stackAtten('hurt',0.08);
+      if(!at) return;
+      _duck(0.55*at,0.06,0.34);
+      const t=AC.currentTime, mg=_o(0.40*at);
       // Painful crunch noise
       const ns=AC.createBufferSource(); ns.buffer=_nb();
       const nf=AC.createBiquadFilter(); nf.type='lowpass'; nf.frequency.value=700;
@@ -2229,7 +2299,9 @@ function initSector93() {
       if(!AC) return;
       const t=AC.currentTime;
       const heavy=type==='brute'||type==='goliath'||type==='miniboss';
-      const mg=_oAt(heavy?0.30:0.20,worldX,worldZ);
+      const at=_stackAtten('enemyAttack',0.07);
+      if(!at) return;
+      const mg=_oAt((heavy?0.30:0.20)*at,worldX,worldZ);
       const ns=AC.createBufferSource(); ns.buffer=_nb();
       const f=AC.createBiquadFilter(); f.type='bandpass'; f.Q.value=0.9;
       const dur=heavy?0.30:0.18;
@@ -2275,8 +2347,12 @@ function initSector93() {
     enemyDie(type='grunt',worldX=null,worldZ=null){
       if(!AC) return;
       const boss=type==='miniboss';
+      // Bosses and goliaths are singular events and keep their full weight; only
+      // trash deaths collapse, which is the case a volley can multiply.
+      const at=boss?1:_stackAtten('enemyDie',0.07);
+      if(!at) return;
       if(boss||type==='goliath') _duck(0.55,0.10,0.5);
-      const t=AC.currentTime, mg=_oAt(boss?0.46:0.30,worldX,worldZ);
+      const t=AC.currentTime, mg=_oAt((boss?0.46:0.30)*at,worldX,worldZ);
       // Death screech
       const o=AC.createOscillator(); o.type='square';
       const of2=AC.createBiquadFilter(); of2.type='bandpass'; of2.frequency.value=700; of2.Q.value=2;
@@ -4923,6 +4999,18 @@ function initSector93() {
       }
     }
 
+    // Record where the key ended up, plus a one-cell skirt. keyChamberCells was
+    // created here, threaded through the level object and checked by addTorches --
+    // but nothing ever added to it, so that near-key exclusion (the only proximity
+    // guard wall torches have) silently did nothing and a torch could be bolted to
+    // the wall the pedestal stands against. Scanning the finished map covers every
+    // placement branch above rather than duplicating the add at each one.
+    for(let z=0;z<H;z++) for(let x=0;x<W;x++) {
+      if(map[z][x]!==6) continue;
+      for(let dz=-1;dz<=1;dz++) for(let dx=-1;dx<=1;dx++)
+        keyChamberCells.add(`${x+dx},${z+dz}`);
+    }
+
     // ── Enemies: randomized spawn locations ─────────────────────────────────
     const spawnPX = rooms[0].cx+0.5, spawnPZ = rooms[0].cz+0.5;
     const MIN_SAFE = 7.5; // enemies must be at least this far from spawn
@@ -4979,7 +5067,23 @@ function initSector93() {
     };
     const pickupRoomsByDistance=rooms.filter(r=>r!==rooms[0])
       .sort((a,b)=>Math.hypot(b.cx-rooms[0].cx,b.cz-rooms[0].cz)-Math.hypot(a.cx-rooms[0].cx,a.cz-rooms[0].cz));
+    // Reserve the rooms the guaranteed upgrade/armour drops will want BEFORE the
+    // ambient loot pass runs. Ambient loot claims room centres, and the mandatory
+    // drops only ever fall back to *other room centres* -- so once every room was
+    // taken, the guaranteed pickup silently failed to place at all. That is
+    // reproducible on level 4, where all seven non-spawn rooms get ambient loot
+    // and the tier-2 bow simply does not appear until the level after.
+    const reservedRooms=new Set();
+    if (player.gunTier<6&&progression.gunTier>player.gunTier&&pickupRoomsByDistance[0])
+      reservedRooms.add(pickupRoomsByDistance[0]);
+    if (player.armorTier<6&&progression.armorTier>player.armorTier)
+      for (const r of pickupRoomsByDistance) if(!reservedRooms.has(r)){ reservedRooms.add(r); break; }
     for(let ri=1;ri<rooms.length;ri++) {
+      if(reservedRooms.has(rooms[ri])) continue;
+      // Never drop ambient loot on the key's own cell either. It self-heals today
+      // because findPickupSpot spirals away from the key at spawn time, but only
+      // just -- in a minimum-size room the key cell is the room's only floor tile.
+      if(keyChamberCells.has(`${rooms[ri].cx},${rooms[ri].cz}`)) continue;
       if(rng(ri+1000)<0.65)
         tryAddPickup(rooms[ri].cx+0.5, rooms[ri].cz+0.5, rng(ri+1100)<0.62?'medkit':'ammo');
     }
@@ -5506,20 +5610,27 @@ function initSector93() {
   // brightness from any distance and glow through the murk. Approximate the
   // real lighting instead: the player's carried torch plus whichever level
   // lights the budget currently has lit. Scene fog handles the rest.
+  // Pooled: this runs every frame and used to allocate a fresh record per visible
+  // light (up to the light budget, so ~1.7k short-lived objects a second at 60fps
+  // on the default setting). _litCount is the live length; _litSources only grows.
   const _litSources=[], _litPos=new THREE.Vector3();
+  let _litCount=0;
   function collectLitSources(){
-    _litSources.length=0;
+    _litCount=0;
     for(const arr of [torches,fireLights,fixtureLights]){
       for(const s of arr){
         const l=s.light; if(!l||!l.visible) continue;
         l.getWorldPosition(_litPos);
-        _litSources.push({x:_litPos.x,z:_litPos.z,i:l.intensity,range:l.distance||8});
+        const rec=_litSources[_litCount]||(_litSources[_litCount]={x:0,z:0,i:0,range:0});
+        rec.x=_litPos.x; rec.z=_litPos.z; rec.i=l.intensity; rec.range=l.distance||8;
+        _litCount++;
       }
     }
   }
   function enemyShade(x,z){
     let b=1.5/(1+Math.hypot(player.x-x,player.z-z)*0.45);
-    for(const s of _litSources){
+    for(let li=0;li<_litCount;li++){
+      const s=_litSources[li];
       const d=Math.hypot(s.x-x,s.z-z);
       if(d<s.range) b=Math.max(b,(s.i*0.5)/(1+d*0.55));
     }
@@ -5528,8 +5639,11 @@ function initSector93() {
   // How hard enemies push off each other, and the range it applies over. Kept
   // well under 1 so separation only ever bends a route, never overrides it.
   const SEPARATION_WEIGHT=0.55, SEPARATION_RANGE=0.68;
-  function updateEnemies(dt) {
+  function updateEnemies(dt,elapsed) {
     const er=ENEMY_RADIUS;
+    // Was performance.now() once per enemy per frame; all uses only need a shared
+    // clock, and animate() already computed one.
+    const nowSec=elapsed!==undefined?elapsed:performance.now()*0.001;
     collectLitSources();
     ensureNavField();
     enemies.forEach(e=>{
@@ -5562,7 +5676,7 @@ function initSector93() {
         const w=(SEPARATION_RANGE-od)/od;
         sepX+=odx*w; sepZ+=odz*w; sepN++;
       }
-      const t=performance.now()*0.001+d.bs;
+      const t=nowSec+d.bs;
       // Distant mobs fade out instead of silhouetting black against the fog:
       // shading can only darken them, and past torch range a darkened sprite
       // reads as a cardboard cutout hovering in the murk.
@@ -6436,6 +6550,7 @@ function initSector93() {
     if (!gameControlKeys.has(ev.code)) return;
     if (ev.code!=='Escape') ev.preventDefault();
     if (restartTimer) return;
+    if (gameState!=='playing') return;   // weapon/attack keys are in-game only
     if (ev.code==='Digit1'&&!ev.repeat){setWeaponMode(2);return;}
     if (ev.code==='Digit2'&&!ev.repeat){setWeaponMode(1);return;}
     setKey(ev.code,true);
@@ -6452,7 +6567,12 @@ function initSector93() {
   window.addEventListener('blur',clearMovementInput);
   document.addEventListener('mousemove',ev=>{
     if (document.pointerLockElement!==renderer.domElement) return;
-    player.yaw-=ev.movementX*0.0025; player.pitch-=ev.movementY*0.0022;
+    // Also gated on gameActive: pointer lock can still be held during the
+    // level-complete overlay and the restart countdown, where movement is frozen
+    // but the camera could previously still be spun around behind the screen.
+    if (!gameActive||gameState!=='playing') return;
+    player.yaw-=ev.movementX*LOOK_BASE*settings.sensitivity;
+    player.pitch-=ev.movementY*LOOK_BASE*settings.sensitivity*(settings.invertY?-1:1);
     player.pitch=Math.max(-MAX_PITCH,Math.min(MAX_PITCH,player.pitch));
   });
   renderer.domElement.addEventListener('click',()=>{
@@ -6476,6 +6596,9 @@ function initSector93() {
     ambientVolumeValue.value=ambientVolumeValue.textContent=`${Math.round(settings.ambient*100)}%`;
     resolutionSetting.value=String(settings.renderScale);
     fogSetting.value=String(settings.fogDensity);
+    sensSetting.value=String(settings.sensitivity);
+    sensValue.textContent=Number(settings.sensitivity).toFixed(2);
+    invertYSetting.checked=!!settings.invertY;
     pixelSetting.checked=!!settings.pixelated;
     pixelRatioSetting.value=String(settings.pixelRatio);
     aaSetting.value=String(settings.aa);
@@ -6493,6 +6616,12 @@ function initSector93() {
   }));
   resolutionSetting.addEventListener('change',()=>{settings.renderScale=Number(resolutionSetting.value);applyGraphicsSettings();});
   fogSetting.addEventListener('change',()=>{settings.fogDensity=Number(fogSetting.value);applyGraphicsSettings();});
+  sensSetting.addEventListener('input',()=>{
+    settings.sensitivity=Number(sensSetting.value);
+    sensValue.textContent=settings.sensitivity.toFixed(2);
+    saveSettings();
+  });
+  invertYSetting.addEventListener('change',()=>{settings.invertY=invertYSetting.checked;saveSettings();});
   pixelSetting.addEventListener('change',()=>{
     settings.pixelated=pixelSetting.checked;
     // The crunchy look and smoothing are mutually exclusive — turning one on relaxes the other.
@@ -6526,7 +6655,17 @@ function initSector93() {
     if (closing) startBtn.focus();
   });
   settingsPanel.addEventListener('click',ev=>ev.stopPropagation());
-  settingsPanel.addEventListener('keydown',ev=>ev.stopPropagation());
+  // stopPropagation keeps game controls from firing while adjusting settings, but
+  // it also swallowed Escape without the panel implementing the conventional
+  // close-on-Escape itself, so a keyboard user had to Tab all the way to "Done".
+  settingsPanel.addEventListener('keydown',ev=>{
+    if (ev.key==='Escape'&&!settingsPanel.hidden) {
+      settingsPanel.hidden=true;
+      settingsToggle.setAttribute('aria-expanded','false');
+      settingsToggle.focus();
+    }
+    ev.stopPropagation();
+  });
 
   // ── Updates ────────────────────────────────────────────────────────────────
   // window.gameUpdater only exists under Electron (see electron/preload.js), so
@@ -6646,12 +6785,15 @@ function initSector93() {
     try{if(renderer.domElement.requestPointerLock){pendingLock=true;renderer.domElement.requestPointerLock();}}catch(_){pendingLock=false;}
   }
 
+  // Losing pointer lock pauses the game, so it should pause the audio too. Only
+  // tab-hide used to suspend the context, so alt-tabbing to another window left
+  // the music and ambient timers audibly running behind a paused game.
   document.addEventListener('pointerlockchange',()=>{
     const locked=document.pointerLockElement===renderer.domElement;
-    if (locked){pendingLock=false;setGameState('playing');if(plFbT){clearTimeout(plFbT);plFbT=null;}return;}
+    if (locked){pendingLock=false;setGameState('playing');if(AC&&AC.state==='suspended')AC.resume();if(plFbT){clearTimeout(plFbT);plFbT=null;}return;}
     if (pendingLock) return;
     pendingLock=false;
-    if (gameState==='playing'&&player.health>0){gameActive=false;clearMovementInput();startPr.classList.remove('hidden');statusEl.textContent='Click to resume';}
+    if (gameState==='playing'&&player.health>0){gameActive=false;clearMovementInput();startPr.classList.remove('hidden');statusEl.textContent='Click to resume';if(AC)AC.suspend();}
   });
   // Failing to acquire the lock must leave the "click to resume" prompt UP. This
   // used to hide it, which is exactly backwards: the level-complete timer
@@ -6784,8 +6926,57 @@ function initSector93() {
   const FRAME_SLOP=0.12;
   let lastFrameAt=-Infinity;
 
+  // Wrapper so a throw anywhere in the frame is caught and SHOWN. The loop itself
+  // survives an exception today (rAF for the next frame is queued before the body
+  // runs), but nothing rendered afterwards, so the player got a frozen picture,
+  // no message, and an error only visible in a devtools console they do not have.
+  // Repeated failures stop the loop rather than spraying the same error at 60Hz.
+  let _frameErrors=0, _frameDead=false;
   function animate() {
+    if (_frameDead) return;
     requestAnimationFrame(animate);
+    try { animateFrame(); }
+    catch (err) {
+      console.error('Frame error:',err);
+      if (++_frameErrors>=3) { _frameDead=true; reportFatal('The game hit an unexpected error.'); }
+    }
+  }
+  // A lost GPU context is a normal event (driver reset, laptop GPU switch,
+  // sleep/resume) and there was no listener at all: the canvas would simply stop
+  // updating with no explanation. Preventing the default event is what makes
+  // restoration possible rather than permanent.
+  renderer.domElement.addEventListener('webglcontextlost',ev=>{
+    ev.preventDefault();
+    _frameDead=true;
+    reportFatal('The graphics context was lost.');
+  },false);
+  renderer.domElement.addEventListener('webglcontextrestored',()=>{
+    // Rebuilding every generated texture and material from here is not something
+    // this codebase is structured for, so tell the player plainly instead of
+    // pretending to recover and rendering a broken scene.
+    stStats.textContent='The graphics context was lost and restored.\nReload to continue.';
+  },false);
+
+  window.addEventListener('error',ev=>{
+    console.error('Uncaught error:',ev.error||ev.message);
+  });
+  window.addEventListener('unhandledrejection',ev=>{
+    console.error('Unhandled promise rejection:',ev.reason);
+  });
+
+  function reportFatal(msg){
+    try{
+      gameActive=false;
+      stateOv.classList.remove('hidden');
+      stTitle.textContent='Something went wrong';
+      stStats.textContent=msg+'\nReload to start a new run.';
+      stBtn.style.display='';
+      stBtn.textContent='Reload';
+      stBtn.onclick=()=>location.reload();
+      if(document.pointerLockElement) document.exitPointerLock();
+    }catch(_){ /* the overlay itself is broken; nothing left to try */ }
+  }
+  function animateFrame() {
     // Do not spend CPU/GPU updating a hidden tab. The next animation frame
     // resumes normally when the page becomes visible again.
     if (document.hidden) return;
@@ -6814,7 +7005,7 @@ function initSector93() {
     if (player.dmgTimer>0) player.dmgTimer=Math.max(0,player.dmgTimer-dt);
     if (muzzleLight.intensity>0) muzzleLight.intensity=Math.max(0,muzzleLight.intensity-dt*38);
     if (gameState==='playing'&&gameActive&&player.health>0) {
-      updateMovement(dt); updateEnemies(dt); updateEnemySpells(dt,elapsed); updatePickups(dt,elapsed); updateExit(elapsed);
+      updateMovement(dt); updateEnemies(dt,elapsed); updateEnemySpells(dt,elapsed); updatePickups(dt,elapsed); updateExit(elapsed);
       // Footstep sounds while moving
       if(player.moving){_stepAccum+=dt;if(_stepAccum>_nextStep){_stepAccum=0;_nextStep=0.34+Math.random()*0.08;sfx.footstep();}}
       else _stepAccum=0.2;

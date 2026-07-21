@@ -500,6 +500,10 @@ function initSector93() {
   const JUMP_VELOCITY = 4.15;
   const JUMP_MAX_Y = 1.6;
   const ENEMY_STEP_HEIGHT = 0.5;
+  // Enemy collision radius. Was hand-copied as a bare 0.26 into spawn validation,
+  // the recovery search, the flee search and the movement loop -- four places that
+  // must agree, or enemies pick spots they then cannot stand in.
+  const ENEMY_RADIUS = 0.26;
 
   // Enemy type definitions: hp, speed, damage, attackCooldown, attackRange, scaleX/Y, colour
   //
@@ -2675,8 +2679,68 @@ function initSector93() {
     }
     return {sx,sz,ox,oz};
   }
+  // ── Decor collider spatial index ────────────────────────────────────────────
+  // Every decor query used to walk the level's entire collider list. steerEnemy
+  // calls enemyCanMoveTo up to 13 times per enemy per frame, and
+  // hasClearAttackPath samples ~80 points along a ray with a full scan at each --
+  // so at the current enemy counts a jammed corridor cost tens of thousands of
+  // collider comparisons per frame.
+  //
+  // Colliders are bucketed by grid cell instead, each registered into every cell
+  // its bounds (plus the largest radius any caller queries with) touch. A lookup
+  // then only tests the handful of props in its own cell.
+  const DECOR_QUERY_PAD = 0.75;
+  const EMPTY_DECOR = [];
+  let decorGrid = null;
+  // Cells an enemy physically cannot walk into because a prop fills them. The nav
+  // flood field consults this: without it the field is decor-blind and will
+  // happily route a chaser into a cell occupied by a throne, altar or hearth that
+  // enemyCanMoveTo then refuses, stalling the enemy against an obstacle the field
+  // keeps insisting is the way forward.
+  let navDecor = null;
+  function rebuildDecorGrid() {
+    decorGrid = new Array(worldW*worldH);
+    for (const c of decorColliders) {
+      const ex=(c.type==='circle'?c.r:c.hw)+DECOR_QUERY_PAD;
+      const ez=(c.type==='circle'?c.r:c.hd)+DECOR_QUERY_PAD;
+      const x0=Math.max(0,Math.floor(c.x-ex)), x1=Math.min(worldW-1,Math.floor(c.x+ex));
+      const z0=Math.max(0,Math.floor(c.z-ez)), z1=Math.min(worldH-1,Math.floor(c.z+ez));
+      for (let z=z0;z<=z1;z++) for (let x=x0;x<=x1;x++) {
+        const i=z*worldW+x;
+        (decorGrid[i]||(decorGrid[i]=[])).push(c);
+      }
+    }
+    // Second pass, now that lookups are cheap: mark cells whose centre an enemy
+    // cannot occupy. Mirrors enemyCanMoveTo's decor rule exactly, so the field can
+    // never recommend a step that movement will reject.
+    navDecor = new Uint8Array(worldW*worldH);
+    for (let z=0;z<worldH;z++) for (let x=0;x<worldW;x++) {
+      const px=x+0.5, pz=z+0.5;
+      let block=0, top=0, blocked=0;
+      for (const c of decorAt(px,pz)) {
+        const overlap=c.type==='circle'
+          ? (c.x-px)*(c.x-px)+(c.z-pz)*(c.z-pz) < (c.r+ENEMY_RADIUS)*(c.r+ENEMY_RADIUS)
+          : Math.abs(c.x-px) < c.hw+ENEMY_RADIUS && Math.abs(c.z-pz) < c.hd+ENEMY_RADIUS;
+        if (!overlap) continue;
+        block=Math.max(block,c.h||1.8);
+        if (c.walkTop) top=Math.max(top,c.walkTop);
+        if (block>ENEMY_STEP_HEIGHT && top>ENEMY_STEP_HEIGHT+0.06) { blocked=1; break; }
+      }
+      navDecor[z*worldW+x]=blocked;
+    }
+    navDirty=true;
+  }
+  // Falls back to the full list until the index exists, so decor queries made
+  // during level construction (before the grid is built) stay correct.
+  function decorAt(x,z) {
+    if (!decorGrid) return decorColliders;
+    const cx=Math.floor(x), cz=Math.floor(z);
+    if (cx<0||cz<0||cx>=worldW||cz>=worldH) return EMPTY_DECOR;
+    return decorGrid[cz*worldW+cx]||EMPTY_DECOR;
+  }
+
   function hitsDecorAt(x,z,r=0) {
-    return decorColliders.some(c=>{
+    return decorAt(x,z).some(c=>{
       if (c.type==='circle') return Math.hypot(c.x-x,c.z-z) < c.r + r;
       const dx=Math.abs(c.x-x), dz=Math.abs(c.z-z);
       return dx < c.hw + r && dz < c.hd + r;
@@ -2685,7 +2749,7 @@ function initSector93() {
   function decorInfoAt(x,z,r=0) {
     let height=0;
     let walkTop=0;
-    for (const c of decorColliders) {
+    for (const c of decorAt(x,z)) {
       const overlap = c.type==='circle'
         ? Math.hypot(c.x-x,c.z-z) < c.r + r
         : Math.abs(c.x-x) < c.hw + r && Math.abs(c.z-z) < c.hd + r;
@@ -2702,7 +2766,7 @@ function initSector93() {
   function canMoveTo(x,z,r,jumpY=0) {
     const wallRadius=r+WALL_BUFFER;
     let decorBlock=0, walkTop=0;
-    for (const c of decorColliders) {
+    for (const c of decorAt(x,z)) {
       const overlap=c.type==='circle'
         ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+r)*(c.r+r)
         : Math.abs(c.x-x) < c.hw+r && Math.abs(c.z-z) < c.hd+r;
@@ -2716,7 +2780,7 @@ function initSector93() {
   }
   function enemyCanMoveTo(x,z,r,stepHeight=ENEMY_STEP_HEIGHT) {
     let decorBlock=0, walkTop=0;
-    for (const c of decorColliders) {
+    for (const c of decorAt(x,z)) {
       const overlap=c.type==='circle'
         ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+r)*(c.r+r)
         : Math.abs(c.x-x) < c.hw+r && Math.abs(c.z-z) < c.hd+r;
@@ -2757,7 +2821,7 @@ function initSector93() {
     const steps=Math.max(2,Math.ceil(dist/0.12));
     for (let i=1;i<steps;i++) {
       const t=i/steps, x=ax+dx*t, z=az+dz*t;
-      for (const c of decorColliders) {
+      for (const c of decorAt(x,z)) {
         if ((c.h||1.8)<0.46) continue;
         const overlap=c.type==='circle'
           ? (c.x-x)*(c.x-x)+(c.z-z)*(c.z-z) < (c.r+0.08)*(c.r+0.08)
@@ -2813,6 +2877,9 @@ function initSector93() {
     for(const s of enemySpells){if(s.mesh)disposeTransientObject(s.mesh);}
     for(const g of gibs){if(g.m.parent)g.m.parent.remove(g.m);g.m.geometry.dispose();g.m.material.dispose();}
     enemies.length=pickups.length=torches.length=fireLights.length=fixtureLights.length=transientLights.length=ceilingDrips.length=mossStrands.length=gates.length=gibs.length=arrows.length=enemySpells.length=decorColliders.length=pendingDamage.length=0;
+    // The spatial index points at the colliders just cleared; drop it so decorAt
+    // falls back to the (now empty) list rather than serving stale props.
+    decorGrid=null; navDecor=null;
     currentMapKeys = [];
     currentRooms = [];
     bossExitRoom = null;
@@ -3241,6 +3308,16 @@ function initSector93() {
       src.light.visible=vis;
       const cast=vis&&shadowCasters.has(index);
       if (cast) configLightShadow(src.light);
+      // Demoting a caster used to flip castShadow off and leave its cube shadow
+      // map allocated until clearLevel. These are PointLights, so that is six
+      // faces at the configured resolution per stale light -- and walking a level
+      // rotates dozens of torches through the small caster budget, so the waste
+      // accumulated for as long as the level lasted. Free it on the way out.
+      if (src.light.castShadow&&!cast&&src.light.shadow&&src.light.shadow.map) {
+        src.light.shadow.map.dispose();
+        src.light.shadow.map=null;
+        src.light._shadowQ=undefined;   // force a reconfigure if it is promoted again
+      }
       if (src.light.castShadow!==cast) src.light.castShadow=cast;
     });
   }
@@ -5065,6 +5142,9 @@ function initSector93() {
     addDampAtmosphere();
     addGroundClutter();
     buildPortal(exitX,exitZ,idx+2);
+    // Every prop for this level is now placed, so index them. Must happen before
+    // enemy spawn selection and the first nav flood, both of which query decor.
+    rebuildDecorGrid();
     const enemySpan=(x,z,dx,dz)=>{
       let steps=0, cx=x, cz=z;
       while(cx>=0&&cz>=0&&cx<worldW&&cz<worldH&&!isSolid(currentMap[cz]?.[cx])){ steps++; cx+=dx; cz+=dz; }
@@ -5265,7 +5345,7 @@ function initSector93() {
   }
 
   function safeSpawn(x,z,occ,spawnX,spawnZ,allowBossExitRoom=false) {
-    const valid=(px,pz)=>canMoveTo(px,pz,0.26)
+    const valid=(px,pz)=>canMoveTo(px,pz,ENEMY_RADIUS)
       && occ.every(o=>Math.hypot(o.x-px,o.z-pz)>0.7)
       && Math.hypot(px-spawnX,pz-spawnZ)>=7
       && (allowBossExitRoom||!inBossExitRoom(px,pz));
@@ -5295,8 +5375,15 @@ function initSector93() {
   let navDist=null, navQueue=null;
   let navGoalCX=-1, navGoalCZ=-1, navDirty=true;
 
-  const navBlocked = (cx,cz) =>
+  // Walls only. Used to decide whether the flood can be seeded at all -- the
+  // player may legitimately be standing on top of a prop, which is decor-blocked
+  // for enemies but is still a valid goal to flood outward from.
+  const navWallBlocked = (cx,cz) =>
     cx<0||cz<0||cx>=worldW||cz>=worldH||isSolid(currentMap[cz][cx]);
+  // Walls plus props an enemy cannot enter. Used for flood expansion and for
+  // choosing a waypoint, so the field never routes into something impassable.
+  const navBlocked = (cx,cz) =>
+    navWallBlocked(cx,cz) || (navDecor?navDecor[cz*worldW+cx]===1:false);
 
   function resetNavField() { navGoalCX=-1; navGoalCZ=-1; navDirty=true; }
 
@@ -5334,7 +5421,8 @@ function initSector93() {
     // If the player is clipped into geometry the flood has no valid seed. Keep the
     // previous field (slightly stale beats blanking every enemy's route) and retry
     // next frame -- navGoalC* deliberately stays put so the check above fails again.
-    if (navBlocked(cx,cz)) return;
+    // Tested against walls only: standing on a barrel must not blank the field.
+    if (navWallBlocked(cx,cz)) return;
     rebuildNavField(cx,cz);
   }
 
@@ -5360,7 +5448,7 @@ function initSector93() {
     return best;
   }
 
-  function findEnemyRecoverySpot(enemy,r=0.26) {
+  function findEnemyRecoverySpot(enemy,r=ENEMY_RADIUS) {
     const sx=enemy.position.x, sz=enemy.position.z;
     for (let radius=0.25;radius<=1.5;radius+=0.25) {
       for (let i=0;i<16;i++) {
@@ -5398,7 +5486,7 @@ function initSector93() {
 
   // Pick a flee destination: a free cell that maximises distance from the player
   // and ideally has no line-of-sight to the player.
-  function findFleeSpot(enemy,er=0.26) {
+  function findFleeSpot(enemy,er=ENEMY_RADIUS) {
     const ex=enemy.position.x, ez=enemy.position.z;
     let best=null, bestScore=-Infinity;
     for (let i=0;i<24;i++) {
@@ -5441,7 +5529,7 @@ function initSector93() {
   // well under 1 so separation only ever bends a route, never overrides it.
   const SEPARATION_WEIGHT=0.55, SEPARATION_RANGE=0.68;
   function updateEnemies(dt) {
-    const er=0.26;
+    const er=ENEMY_RADIUS;
     collectLitSources();
     ensureNavField();
     enemies.forEach(e=>{
@@ -5514,9 +5602,30 @@ function initSector93() {
           const fd=Math.hypot(fx,fz);
           if (fd>0.05) {
             const step=d.spd*dt*1.15;
-            const nx=e.position.x+fx/fd*step, nz=e.position.z+fz/fd*step;
+            let fdx=fx/fd, fdz=fz/fd;
+            // Fleeing packs converge on similar spots, so they need separating for
+            // the same reason chasing ones do.
+            if (sepN) {
+              fdx+=sepX*SEPARATION_WEIGHT; fdz+=sepZ*SEPARATION_WEIGHT;
+              const fs=Math.hypot(fdx,fdz)||1; fdx/=fs; fdz/=fs;
+            }
+            const nx=e.position.x+fdx*step, nz=e.position.z+fdz*step;
             const moved=steerEnemy(e.position.x,e.position.z,nx,nz,step,er);
             if (moved) { e.position.x=moved.x; e.position.z=moved.z; }
+          }
+        }
+        // Flee had no stuck handling at all, unlike chase. A cornered low-HP mob
+        // whose steer fails every frame -- or for which findFleeSpot returns null,
+        // which it can -- simply froze, and then re-entered flee immediately
+        // because its HP was still under the threshold. Reuse the chase recovery.
+        {
+          const fmv=Math.hypot(e.position.x-d.px,e.position.z-d.pz);
+          if (fmv<0.003) d.stuckT+=dt; else d.stuckT=Math.max(0,d.stuckT-dt*1.2);
+          if (d.stuckT>1.2) { d.fleeDest=findFleeSpot(e,er); d.stuckT=0.3; }
+          if (d.stuckT>4.0) {
+            const recovery=findEnemyRecoverySpot(e,er);
+            if (recovery) { e.position.x=recovery.x; e.position.z=recovery.z; }
+            d.stuckT=0;
           }
         }
       } else if (d.state==='chase') {
@@ -5678,13 +5787,22 @@ function initSector93() {
       d.acd=Math.max(0,d.acd-dt);
         // Ranged casters (the miniboss and warlocks) hurl a projectile from a
         // distance instead of closing for melee.
-        if ((d.type==='miniboss'||d.ranged)&&sees&&dist>2.2&&dist<9.5&&d.acd<=0&&player.health>0
-          &&hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+        // Lower bound is the enemy's own melee reach rather than a flat 2.2, which
+        // left a dead band where a closing caster was too near to cast and too far
+        // to swing, and just walked at you doing nothing.
+        if ((d.type==='miniboss'||d.ranged)&&sees&&dist>d.ar&&dist<9.5&&d.acd<=0&&player.health>0) {
+        if (!hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+          // Blocked by a prop. Without this the cooldown stays at 0 and the whole
+          // ~80-sample path scan re-runs every single frame for as long as the
+          // caster remains blocked; throttle the retry instead.
+          d.acd=0.25;
+        } else {
         d.attackFlash=0.32;
         sfx.spellCast(e.position.x,e.position.z);
         spawnEnemySpell(e);
         d.acd=(d.bossAcd||ETYPES[d.type].acd)*0.8+Math.random()*0.35;
         return;
+        }
       }
         // `sees` is required here for the same reason the ranged branch above
         // requires it: hasClearAttackPath only tests decorColliders, never walls,
@@ -5695,13 +5813,16 @@ function initSector93() {
         //
         // This costs nothing: d.sees is recomputed every frame once dist < 2.2
         // (see the LOS block above), and melee reach never exceeds 1.6.
-        if (dist<d.ar&&d.acd<=0&&player.health>0&&sees
-          &&hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+        if (dist<d.ar&&d.acd<=0&&player.health>0&&sees) {
+        if (!hasClearAttackPath(e.position.x,e.position.z,player.x,player.z)) {
+          d.acd=0.25;   // same retry throttle as the ranged branch
+        } else {
         d.attackFlash=0.24;
         sfx.enemyAttack(d.type,e.position.x,e.position.z);
         applyPlayerDamage(d.dmg+Math.floor(Math.random()*4)-1);
         const attackCooldown=d.bossAcd||ETYPES[d.type].acd;
         d.acd=attackCooldown*0.7+Math.random()*attackCooldown*0.5;
+        }
       }
     });
   }
@@ -6087,6 +6208,10 @@ function initSector93() {
         aimDistance=Math.max(2.5,targetDelta.dot(damageDir));
       }
       const arrow=spawnArrow(off,aimDistance);
+      // updateArrows has always had logic to stop an arrow early if the target it
+      // was aimed at dies mid-flight, but nothing ever set this field, so that
+      // branch was dead.
+      arrow.expectedTarget=e||null;
       if(e) {
         // Resolve from the camera perspective, but delay the result by the
         // same travel time as the visible arrow.
@@ -6694,7 +6819,13 @@ function initSector93() {
       if(player.moving){_stepAccum+=dt;if(_stepAccum>_nextStep){_stepAccum=0;_nextStep=0.34+Math.random()*0.08;sfx.footstep();}}
       else _stepAccum=0.2;
     }
-    updateGibs(dt); updateArrows(dt); updatePendingDamage(dt); updateCamera(dt); updatePlayerTorch(elapsed,dt); updateHud();
+    // Arrows and their delayed damage are combat, so they stop when combat does.
+    // Previously they kept resolving for up to ~2s after death or after the level
+    // was declared complete, landing kills behind the results screen -- and the
+    // level-complete stats string was already rendered, so those kills silently
+    // never showed up in it.
+    if (gameState==='playing'&&player.health>0) { updateArrows(dt); updatePendingDamage(dt); }
+    updateGibs(dt); updateCamera(dt); updatePlayerTorch(elapsed,dt); updateHud();
     atmosphereAccum+=dt;
     if (atmosphereAccum>=1/30) { updateDampAtmosphere(elapsed,atmosphereAccum); atmosphereAccum=0; }
     torchAccum+=dt;

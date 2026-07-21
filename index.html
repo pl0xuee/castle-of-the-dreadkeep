@@ -496,7 +496,6 @@ function initSector93() {
   // are 6 passes each, so this is capped hard and independently of the visibility
   // budget above). Driven by settings.shadowQuality.
   let TORCH_SHADOW_BUDGET = settings.shadows?(settings.shadowQuality||0):0;
-  const CHASE_OFFSETS = [0,0.35,-0.35,0.7,-0.7,1.05,-1.05,1.4,-1.4,1.75,-1.75,Math.PI];
   const JUMP_GRAVITY = 9.5;
   const JUMP_VELOCITY = 4.15;
   const JUMP_MAX_Y = 1.6;
@@ -4632,6 +4631,7 @@ function initSector93() {
   // ── Gates ────────────────────────────────────────────────────────────────────
   function unlockGates() {
     gates.forEach(g=>{ if(g.opened)return; g.opened=true; currentMap[g.z][g.x]=0; unregisterTransientLights(g.m); if(g.m.parent)g.m.parent.remove(g.m); });
+    navDirty=true;   // opened cells change what the flood field can route through
     sfx.gate();
     statusEl.textContent='Gate unlocked — reach the iron gate at the end of the hallway.';
   }
@@ -4958,6 +4958,7 @@ function initSector93() {
     currentRooms=lvl.rooms||[];
     bossExitRoom=lvl.bossExitRoom||null;
     worldW=currentMap[0].length; worldH=currentMap.length;
+    resetNavField();
 
     // Floor & ceiling
     const fGeo=new THREE.PlaneGeometry(worldW,worldH); fGeo.rotateX(-Math.PI/2); fGeo.translate(worldW/2,0,worldH/2);
@@ -5076,9 +5077,6 @@ function initSector93() {
       }
       return {x:fallbackX,z:fallbackZ};
     };
-    // Difficulty scaling — grows every full cycle through the 3 maps
-    const cycle=Math.floor(idx/LEVELS.length);
-
     // Build enemy list: base template + extra difficulty enemies
     const allEnemies=[];
     for (const enemy of (lvl.enemies||[])) {
@@ -5253,24 +5251,85 @@ function initSector93() {
     return{x,z};
   }
 
-  function findChaseMove(x,z,targetX,targetZ,step,r,turnBias=1,moveCheck=canMoveTo,sideLocked=false) {
-    const dx=targetX-x, dz=targetZ-z;
-    const dist=Math.hypot(dx,dz);
-    if (dist<0.001) return null;
-    const base=Math.atan2(dz,dx);
-    let best=null, bestScore=-Infinity;
-    for (const off of CHASE_OFFSETS) {
-      const ang=base+off;
-      const nx=x+Math.cos(ang)*step, nz=z+Math.sin(ang)*step;
-      if (!moveCheck(nx,nz,r)) continue;
-      const side=Math.sign(off);
-      const sameSide=side===Math.sign(turnBias);
-      const sidePref=side===0 ? 0 : sameSide ? (sideLocked?0.55:0.08) : (sideLocked?-0.85:-0.04);
-      const score=-Math.hypot(targetX-nx,targetZ-nz)-Math.abs(off)*0.14+sidePref;
-      if (score>bestScore) {
-        bestScore=score;
-        best={x:nx,z:nz,usedOffset:off};
+  // ── Navigation field ─────────────────────────────────────────────────────────
+  // Enemies used to navigate purely by local steering: aim straight at the player,
+  // try a fan of angles up to +-90 degrees, and if every one was blocked, flip a
+  // turn bias and keep pressing. Local steering cannot solve concave geometry --
+  // an enemy whose only door is behind it walks into the wall forever -- so the
+  // old code papered over it by teleporting any enemy that had not moved in two
+  // seconds, which is both a visible glitch and a silent difficulty leak: a good
+  // fraction of every level's mobs never reached the player at all.
+  //
+  // Instead we keep ONE breadth-first distance field over the walkable grid,
+  // flooded out from the player's cell and shared by every enemy; each one simply
+  // walks downhill. Maps top out at 50x40, so a full rebuild touches ~2000 cells
+  // and only happens when the player crosses into a new cell or a gate opens.
+  const NAV_FAR = 65535;
+  const NAV_N8 = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+  let navDist=null, navQueue=null;
+  let navGoalCX=-1, navGoalCZ=-1, navDirty=true;
+
+  const navBlocked = (cx,cz) =>
+    cx<0||cz<0||cx>=worldW||cz>=worldH||isSolid(currentMap[cz][cx]);
+
+  function resetNavField() { navGoalCX=-1; navGoalCZ=-1; navDirty=true; }
+
+  function rebuildNavField(gx,gz) {
+    navDist.fill(NAV_FAR);
+    const start=gz*worldW+gx;
+    navDist[start]=0;
+    navQueue[0]=start;
+    let head=0, tail=1;
+    // 4-neighbour flood: uniform cost keeps the queue monotonic, so every cell is
+    // reached by a shortest path and enqueued exactly once.
+    while (head<tail) {
+      const idx=navQueue[head++];
+      const x=idx%worldW, z=(idx-x)/worldW;
+      const nd=navDist[idx]+1;
+      for (let i=0;i<4;i++) {
+        const nx=x+NAV_N8[i][0], nz=z+NAV_N8[i][1];
+        if (navBlocked(nx,nz)) continue;
+        const ni=nz*worldW+nx;
+        if (navDist[ni]<=nd) continue;
+        navDist[ni]=nd; navQueue[tail++]=ni;
       }
+    }
+    navGoalCX=gx; navGoalCZ=gz; navDirty=false;
+  }
+
+  function ensureNavField() {
+    if (!currentMap||!worldW||!worldH) return;
+    const n=worldW*worldH;
+    if (!navDist||navDist.length!==n) {
+      navDist=new Uint16Array(n); navQueue=new Int32Array(n); navDirty=true;
+    }
+    const cx=Math.floor(player.x), cz=Math.floor(player.z);
+    if (!navDirty&&cx===navGoalCX&&cz===navGoalCZ) return;
+    // If the player is clipped into geometry the flood has no valid seed. Keep the
+    // previous field (slightly stale beats blanking every enemy's route) and retry
+    // next frame -- navGoalC* deliberately stays put so the check above fails again.
+    if (navBlocked(cx,cz)) return;
+    rebuildNavField(cx,cz);
+  }
+
+  // The next cell an enemy at (x,z) should head for, as a world-space point.
+  // Returns null when the enemy shares the player's cell, sits off the grid, or is
+  // sealed off from the player entirely -- callers fall back to direct steering.
+  function navWaypoint(x,z) {
+    if (!navDist) return null;
+    const cx=Math.floor(x), cz=Math.floor(z);
+    if (navBlocked(cx,cz)) return null;
+    const here=navDist[cz*worldW+cx];
+    if (here===NAV_FAR||here===0) return null;
+    let best=null, bestD=here;
+    for (const [dx,dz] of NAV_N8) {
+      const nx=cx+dx, nz=cz+dz;
+      if (navBlocked(nx,nz)) continue;
+      // Diagonals may not cut a corner: both orthogonal neighbours must be open,
+      // or enemies clip through the diagonal gap between two wall blocks.
+      if (dx&&dz&&(navBlocked(cx+dx,cz)||navBlocked(cx,cz+dz))) continue;
+      const nd=navDist[nz*worldW+nx];
+      if (nd<bestD) { bestD=nd; best={x:nx+0.5,z:nz+0.5}; }
     }
     return best;
   }
@@ -5352,9 +5411,13 @@ function initSector93() {
     }
     return Math.min(1,0.22+b);
   }
+  // How hard enemies push off each other, and the range it applies over. Kept
+  // well under 1 so separation only ever bends a route, never overrides it.
+  const SEPARATION_WEIGHT=0.55, SEPARATION_RANGE=0.68;
   function updateEnemies(dt) {
     const er=0.26;
     collectLitSources();
+    ensureNavField();
     enemies.forEach(e=>{
       const d=e.userData;
       e.lookAt(camera.position.x,e.position.y,camera.position.z);
@@ -5372,6 +5435,19 @@ function initSector93() {
         d.losT=0.11+Math.random()*0.06;
       }
       const sees=d.sees;
+      // Crowd separation, accumulated once and reused by every movement branch.
+      // Weighted by how deep the overlap is, so touching sprites push hard and
+      // merely-nearby ones barely register.
+      let sepX=0, sepZ=0, sepN=0;
+      for (const o of enemies) {
+        if (o===e||!o.userData.alive) continue;
+        const odx=e.position.x-o.position.x, odz=e.position.z-o.position.z;
+        const od2=odx*odx+odz*odz;
+        if (od2<0.000001||od2>=SEPARATION_RANGE*SEPARATION_RANGE) continue;
+        const od=Math.sqrt(od2);
+        const w=(SEPARATION_RANGE-od)/od;
+        sepX+=odx*w; sepZ+=odz*w; sepN++;
+      }
       const t=performance.now()*0.001+d.bs;
       // Distant mobs fade out instead of silhouetting black against the fog:
       // shading can only darken them, and past torch range a darkened sprite
@@ -5419,11 +5495,34 @@ function initSector93() {
         }
       } else if (d.state==='chase') {
         if (dist>0.02) {
-          const targetX=sees?player.x:d.hx, targetZ=sees?player.z:d.hz;
-          const dx=targetX-e.position.x, dz=targetZ-e.position.z;
-          const dd=Math.hypot(dx,dz);
           const step=d.spd*dt;
-          const nx=e.position.x+dx/dd*step, nz=e.position.z+dz/dd*step;
+          // With the player in sight, walk straight at them: routing through cell
+          // centres when the line is already clear makes enemies visibly bob
+          // between grid points instead of closing on you. Out of sight, follow the
+          // flood field, falling back to the last known position only if this
+          // enemy is somehow sealed off from the player.
+          //
+          // `sees` is already a throttled LOS result, so this reuses it rather than
+          // casting a second ray -- an unthrottled hasLOS per enemy per frame is
+          // ~100 wall samples each, which at 30+ chasing mobs is not free.
+          let targetX, targetZ;
+          if (sees) { targetX=player.x; targetZ=player.z; }
+          else {
+            const wp=navWaypoint(e.position.x,e.position.z);
+            if (wp) { targetX=wp.x; targetZ=wp.z; }
+            else { targetX=d.hx; targetZ=d.hz; }
+          }
+          let dx=targetX-e.position.x, dz=targetZ-e.position.z;
+          const dd=Math.hypot(dx,dz)||1;
+          dx/=dd; dz/=dd;
+          // Fold in separation so a pack spreads across the corridor. Without it
+          // every enemy solves for the same route and they collapse into a single
+          // stack of overlapping sprites (enemyCanMoveTo only ever tested walls).
+          if (sepN) {
+            dx+=sepX*SEPARATION_WEIGHT; dz+=sepZ*SEPARATION_WEIGHT;
+            const sd=Math.hypot(dx,dz)||1; dx/=sd; dz/=sd;
+          }
+          const nx=e.position.x+dx*step, nz=e.position.z+dz*step;
           const moved=steerEnemy(e.position.x,e.position.z,nx,nz,step,er);
           if (moved) {
             e.position.x=moved.x; e.position.z=moved.z;
@@ -5442,7 +5541,11 @@ function initSector93() {
           d.turnBias*=-1;
           d.stuckT=0.2;
         }
-        if (d.stuckT>2.0) {
+        // Last-resort unstick. With the flood field this should essentially never
+        // fire -- it now takes 6s of genuinely zero progress rather than 2s, so a
+        // mob briefly shouldered out of a doorway by its own pack is not yanked
+        // across the room in front of the player.
+        if (d.stuckT>6.0) {
           const recovery=findEnemyRecoverySpot(e,er);
           if (recovery) { e.position.x=recovery.x; e.position.z=recovery.z; }
           d.stuckT=0;
@@ -5451,7 +5554,14 @@ function initSector93() {
         // Patrol
         d.wT-=dt; if(d.wT<=0){d.wA+=(Math.random()-0.5)*1.4;d.wT=1+Math.random()*2;}
         const step=d.spd*0.4*dt;
-        const wx=e.position.x+Math.cos(d.wA)*step, wz=e.position.z+Math.sin(d.wA)*step;
+        // Idle groups spawn close together, so they drift apart here too -- without
+        // it a room's worth of patrollers reads as one sprite until they aggro.
+        let wdx=Math.cos(d.wA), wdz=Math.sin(d.wA);
+        if (sepN) {
+          wdx+=sepX*SEPARATION_WEIGHT; wdz+=sepZ*SEPARATION_WEIGHT;
+          const wd=Math.hypot(wdx,wdz)||1; wdx/=wd; wdz/=wd;
+        }
+        const wx=e.position.x+wdx*step, wz=e.position.z+wdz*step;
         const pm=steerEnemy(e.position.x,e.position.z,wx,wz,step,er);
         if (pm && Math.hypot(pm.x-d.hx,pm.z-d.hz)<4) { e.position.x=pm.x; e.position.z=pm.z; }
         else { d.wA+=Math.PI*(0.8+Math.random()*0.4); d.wT=0; }

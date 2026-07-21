@@ -36,7 +36,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Electron 43 requires Node >= 22.12 to build, and Node 20 went
+          # end-of-life 2026-04-30 -- the runner had been warning about it.
+          node-version: 22
 
       # Not `npm ci`: the committed lockfile may have been produced by a
       # non-standard npm, and `npm install` resolves cleanly on any runner.
@@ -60,7 +62,12 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # `success()` is required explicitly. A job-level `if:` REPLACES the implicit
+    # success() gate that `needs:` would otherwise apply, so without it a failed
+    # Windows (or Linux) leg still reached this job -- and because the globs below
+    # run under `nullglob`, that platform's files silently vanished from the array
+    # instead of failing, publishing a half-complete release.
+    if: success() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,6 +91,27 @@ jobs:
             dist/dreadkeep-windows/*.blockmap
           )
           echo "Publishing ${#files[@]} files:"; printf '  %s\n' "${files[@]}"
+          # Belt and braces behind the success() gate: assert both installers and
+          # both updater manifests are actually present, so a release can never go
+          # out missing a platform even if a build leg "succeeds" without emitting.
+          missing=0
+          for required in \
+            'dist/dreadkeep-linux/*.AppImage' \
+            'dist/dreadkeep-linux/latest-linux.yml' \
+            'dist/dreadkeep-windows/*.exe' \
+            'dist/dreadkeep-windows/latest.yml'
+          do
+            # The -e test is load-bearing: nullglob only blanks patterns that
+            # actually contain wildcards, so a literal path like latest.yml
+            # survives expansion even when the file is absent.
+            found=( $required )
+            if [ ${#found[@]} -eq 0 ] || [ ! -e "${found[0]}" ]; then
+              echo "MISSING: $required"; missing=1
+            fi
+          done
+          if [ $missing -ne 0 ]; then
+            echo "Refusing to publish an incomplete release."; exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \

@@ -503,22 +503,29 @@ function initSector93() {
   const ENEMY_STEP_HEIGHT = 0.5;
 
   // Enemy type definitions: hp, speed, damage, attackCooldown, attackRange, scaleX/Y, colour
-  // HP values are deliberately coarse-grained (not 1-8) so that the per-level HP
-  // multiplier lands on distinct integers instead of rounding whole level bands
-  // to the same value.
+  //
+  // The roster is the *primary* difficulty curve: MOB_ROSTER below introduces these
+  // types one at a time across levels 1-15, so the mix you fight drifts from all
+  // grunts to mostly fiends/goliaths. That only reads as progression if the tiers
+  // are genuinely far apart, so HP spans 2..30 (a 15x spread) rather than the old
+  // 2..16 where the per-level HP multiplier flattened everything into "2-3 arrows"
+  // regardless of which type it was.
+  //
+  // Damage is tuned against a 100 HP player and armour that absorbs up to 49%:
+  // a grunt needs ~14 hits to kill you, a goliath ~3.
   const ETYPES = {
-    grunt:   { hp:2, spd:1.05, dmg:9,  acd:1.2,  ar:1.05, sx:0.88, sy:0.92, col:0x334422 },
-    soldier: { hp:5, spd:1.45, dmg:14, acd:0.9,  ar:1.1,  sx:0.98, sy:1.02, col:0x4a1818 },
-    brute:   { hp:9, spd:0.75, dmg:21, acd:1.6,  ar:1.2,  sx:1.16, sy:1.08, col:0x1a1028 },
-    spectre: { hp:4, spd:1.95, dmg:12, acd:0.7,  ar:1.0,  sx:0.94, sy:1.05, col:0x303850 },
-    fiend:   { hp:6, spd:1.6,  dmg:16, acd:0.95, ar:1.15, sx:1.08, sy:1.0,  col:0x5a1010 },
-    goliath: { hp:16,spd:0.52, dmg:30, acd:1.85, ar:1.3,  sx:1.25, sy:1.18, col:0x0a0a14 },
-    miniboss:{ hp:19,spd:0.68, dmg:28, acd:1.95, ar:1.4,  sx:1.22, sy:1.2,  col:0x2a0a2a },
+    grunt:   { hp:2, spd:1.05, dmg:7,  acd:1.2,  ar:1.05, sx:0.88, sy:0.92, col:0x334422 },
+    soldier: { hp:6, spd:1.45, dmg:13, acd:0.9,  ar:1.1,  sx:0.98, sy:1.02, col:0x4a1818 },
+    brute:   { hp:14,spd:0.75, dmg:22, acd:1.6,  ar:1.2,  sx:1.16, sy:1.08, col:0x1a1028 },
+    spectre: { hp:8, spd:1.95, dmg:15, acd:0.7,  ar:1.0,  sx:0.94, sy:1.05, col:0x303850 },
+    fiend:   { hp:18,spd:1.6,  dmg:20, acd:0.95, ar:1.15, sx:1.08, sy:1.0,  col:0x5a1010 },
+    goliath: { hp:30,spd:0.52, dmg:32, acd:1.85, ar:1.3,  sx:1.25, sy:1.18, col:0x0a0a14 },
+    miniboss:{ hp:16,spd:0.68, dmg:28, acd:1.95, ar:1.4,  sx:1.22, sy:1.2,  col:0x2a0a2a },
     // Warlock — a robed caster that hurls fireballs from range (see the `ranged`
     // branch in updateEnemies). Fragile up close; dangerous if left to line you up.
-    warlock: { hp:5, spd:0.95, dmg:12, acd:1.7,  ar:1.0,  sx:0.98, sy:1.06, col:0x3a1630, ranged:true },
+    warlock: { hp:9, spd:0.95, dmg:14, acd:1.7,  ar:1.0,  sx:0.98, sy:1.06, col:0x3a1630, ranged:true },
     // Hound — a fast, low-HP melee swarmer. Cheap individually, deadly in a pack.
-    hound:   { hp:3, spd:2.15, dmg:8,  acd:0.75, ar:1.0,  sx:1.06, sy:0.72, col:0x241612 },
+    hound:   { hp:3, spd:2.15, dmg:9,  acd:0.75, ar:1.0,  sx:1.06, sy:0.72, col:0x241612 },
   };
 
   // Bow tiers. A volley's rays each seek a *different* enemy (see the `killed`
@@ -542,97 +549,121 @@ function initSector93() {
   // has to track bow tier or it becomes literally unusable once mobs scale.
   const meleeDamage = () => Math.max(1, Math.round(ARROW_DMG[Math.max(0,Math.min(player.gunTier,6))] * 0.55));
 
+  // The gear arc has to *finish inside the campaign*. It used to top out at level
+  // 19 (bow) and 20 (armour), which put the Storm Bow, Void Bow, Wyrmguard Plate
+  // and Abyssal Aegis past the end of the designed content -- four of the best
+  // rewards in the game were only reachable in the endless victory lap, and the
+  // campaign's own finale was fought at tier 4 of 6.
+  //
+  // Now the last bow lands on level 13 and the last armour on 14, so levels 13-15
+  // are played at full power against the nastiest roster. Tiers alternate bow /
+  // armour and never skip, so a single missed pickup costs one level of catch-up
+  // rather than stranding a tier (generateLevel only ever places one of each).
   const UPGRADE_MILESTONES = [
-    { level: 4, gunTier: 1, armorTier: 0 },
-    { level: 5, gunTier: 1, armorTier: 1 },
-    { level: 7, gunTier: 2, armorTier: 1 },
-    { level: 8, gunTier: 2, armorTier: 2 },
-    { level: 10, gunTier: 3, armorTier: 2 },
-    { level: 11, gunTier: 3, armorTier: 3 },
-    { level: 13, gunTier: 4, armorTier: 3 },
-    { level: 14, gunTier: 4, armorTier: 4 },
-    { level: 16, gunTier: 5, armorTier: 4 },
-    { level: 17, gunTier: 5, armorTier: 5 },
-    { level: 19, gunTier: 6, armorTier: 5 },
-    { level: 20, gunTier: 6, armorTier: 6 },
+    { level: 2,  gunTier: 1, armorTier: 0 },
+    { level: 3,  gunTier: 1, armorTier: 1 },
+    { level: 4,  gunTier: 2, armorTier: 1 },
+    { level: 5,  gunTier: 2, armorTier: 2 },
+    { level: 7,  gunTier: 3, armorTier: 2 },
+    { level: 8,  gunTier: 3, armorTier: 3 },
+    { level: 9,  gunTier: 4, armorTier: 3 },
+    { level: 10, gunTier: 4, armorTier: 4 },
+    { level: 11, gunTier: 5, armorTier: 4 },
+    { level: 12, gunTier: 5, armorTier: 5 },
+    { level: 13, gunTier: 6, armorTier: 5 },
+    { level: 14, gunTier: 6, armorTier: 6 },
   ];
 
-  function tierForLevel(level, thresholds) {
-    let tier = 0;
-    for (let i = 0; i < thresholds.length; i++) {
-      if (level >= thresholds[i]) tier = i;
-    }
-    return tier;
-  }
-
-  // Levels 1-15 (idx 0-14) are the designed campaign; everything past that is an
-  // endless victory lap that keeps climbing at a gentler clip.
+  // Levels 1-15 are the designed campaign; everything past that is an endless
+  // victory lap that keeps climbing at a gentler clip.
   //
-  // The curves are geometric rather than the old pressure/cycle blend, which
-  // stepped every 3 levels (LEVELS.length) and made difficulty saw-tooth: a
-  // level could land noticeably easier than the one before it.
-  //
-  // Bosses scale steeper than trash on purpose. Player DPS grows ~8x across the
-  // core band as bows tier up, so a shared curve would leave each successive
-  // guardian softer than the last.
-  const CORE_LEVELS = 14;
+  // Every function in this section takes the 0-based level index the rest of the
+  // engine passes around and converts to the 1-based level the player sees, so the
+  // numbers here line up with the roster intro levels and the milestone table.
+  const CORE_LEVELS = 15;
+  const coreLv   = level => Math.min(level+1, CORE_LEVELS);   // 1..15
+  const beyondLv = level => Math.max(0, (level+1) - CORE_LEVELS);
 
   // ── Enemy budget ────────────────────────────────────────────────────────────
-  // ONE number owns how many enemies a level contains.
-  //
-  // Previously three independent systems each added their own enemies and none of
-  // them knew about the others: the generator spawned `rooms.length * 0.9` (and
-  // room count climbs to 16), the hallway placed up to 7 guards, and getDifficulty
-  // bolted on an `extra` pass. Stacked, that reached ~40 mobs by level 15 and ~56
-  // deep in the endless run -- and the only backstop was a cap of 40% of every
-  // walkable tile in the map, which is not a limit so much as a suggestion.
-  //
-  // Now every producer draws from this one budget, so the population is a designed
-  // curve instead of an emergent accident.
-  const ENEMY_BUDGET_CAP = 38;
+  // ONE number owns how many enemies a level contains, so the population is a
+  // designed curve rather than the sum of three systems that each add their own.
+  const ENEMY_BUDGET_CAP = 40;
   function getEnemyBudget(level) {
-    const core=Math.min(level,CORE_LEVELS);
-    const beyond=Math.max(0,level-CORE_LEVELS);
-    // 10 mobs on level 1, ~28 by level 15, then a slow climb to the hard ceiling.
-    return Math.max(6, Math.min(Math.round(10 + core*1.25 + beyond*0.5), ENEMY_BUDGET_CAP));
+    // 6 mobs on level 1 (a genuine tutorial), ~31 by level 15, then a slow crawl
+    // to the ceiling. The old curve opened at 10, which is a lot of bodies to
+    // handle with the 2-damage starter bow.
+    return Math.max(6, Math.min(
+      Math.round(4.5 + coreLv(level)*1.75 + beyondLv(level)*0.45), ENEMY_BUDGET_CAP));
   }
-  // How the budget is divided. The hard pass spawns the nastier half of the pool,
-  // so it stays a fixed slice rather than a term that grows on its own.
-  const budgetHallwayGuards = level => Math.min(2+Math.floor(level/2), 7);
-  const budgetHardPass      = level => Math.round(getEnemyBudget(level)*0.30);
+  // How the budget is divided. All three slices are proportions of the one budget
+  // -- previously the guards and the hard pass grew on their own schedules, so on
+  // level 1 they claimed 4 of the 6 mobs and left almost nothing roaming.
+  const budgetHallwayGuards = level => Math.max(1, Math.min(Math.round(getEnemyBudget(level)*0.18), 7));
+  const budgetHardPass      = level => Math.round(getEnemyBudget(level)*0.26);
   const budgetRoaming       = level =>
     Math.max(0, getEnemyBudget(level) - budgetHallwayGuards(level) - budgetHardPass(level) - 1 /* guardian */);
 
+  // ── Guardian HP ─────────────────────────────────────────────────────────────
+  // The guardian gates the level, so its difficulty is the one number that must
+  // never dip. Scaling its HP geometrically could not do that: player DPS jumps in
+  // discrete ~40% steps whenever a bow tier lands, so a smooth HP curve made every
+  // upgrade level's boss *easier* than the one before (arrows-to-kill used to run
+  // 11 -> 12 -> 18 -> 12 -> 21 -> 18 -> 25 -> 17, a saw with 8-arrow teeth).
+  //
+  // Instead we pick the target arrows-to-kill directly and solve for the HP that
+  // produces it, against the bow the progression *intends* you to hold. The result
+  // is monotonic by construction: 8 arrows on level 1 rising to 30 on level 15.
+  const bossTargetArrows = level => coreLv(level)*1.55 + 6.45 + beyondLv(level)*1.9;
+  function getBossHpMult(level) {
+    const tier = getProgressionTargets(level).gunTier;
+    return ARROW_DMG[Math.max(0,Math.min(tier,6))] * bossTargetArrows(level) / ETYPES.miniboss.hp;
+  }
+
   function getDifficulty(level) {
-    const core=Math.min(level,CORE_LEVELS);
-    const beyond=Math.max(0,level-CORE_LEVELS);
+    const core=coreLv(level)-1, beyond=beyondLv(level);
     return {
-      hpMult:     Math.pow(1.145,core) * Math.pow(1.06,beyond),
-      bossHpMult: Math.pow(1.190,core) * Math.pow(1.07,beyond),
-      spdMult:    1 + (core/CORE_LEVELS)*0.28 + beyond*0.012,
-      dmgMult:    Math.pow(1.028,core) * Math.pow(1.02,beyond),
+      // Trash HP climbs gently because MOB_ROSTER already does the heavy lifting --
+      // the *mix* shifts from 2 HP grunts to 30 HP goliaths, which is a 15x swing on
+      // its own. The old 1.145 compounded on top of that and just pushed everything
+      // into the same 2-3 arrow bracket again.
+      hpMult:     Math.pow(1.070,core) * Math.pow(1.045,beyond),
+      bossHpMult: getBossHpMult(level),
+      // Capped, or hounds (2.15 base) eventually outrun the player's 3.2 and the
+      // endless run becomes unescapable rather than merely hard.
+      spdMult:    Math.min(1 + (core/(CORE_LEVELS-1))*0.28 + beyond*0.012, 1.42),
+      // Armour absorb reaches 49%, so incoming damage has to outgrow it. At 1.028
+      // it did not: post-armour hits actually got *softer* as you levelled
+      // (11 -> 13 -> 11 -> 13 -> 11 -> 10). Now they run 7 -> 20 across the core.
+      dmgMult:    Math.pow(1.052,core) * Math.pow(1.028,beyond),
       extra:      budgetHardPass(level),
-      ammoBonus:  Math.max(2, Math.round(2 + (core/CORE_LEVELS)*3)),
+      ammoBonus:  Math.max(2, Math.round(2 + (core/(CORE_LEVELS-1))*3)),
     };
   }
 
-  // Variants rotate by level, so a wide HP spread here reads as difficulty noise
-  // rather than flavour -- the old 13..28 range meant which guardian you drew
-  // mattered more than which level you were on. Keep the spread tight and let
-  // speed / attack cadence / reach carry each one's identity instead.
-  // Order matters: variants rotate by level, so index 0 is the level-1 guardian.
-  // The Colossus sits last so it first appears on level 5 with a tier-1 bow in
-  // hand rather than on level 3 against the starter bow, and it lands again on
-  // level 15 as the capstone of the core campaign.
+  // Guardian identity is behaviour, not bulk. Every variant shares ETYPES.miniboss.hp
+  // as its base so getBossHpMult owns the entire HP curve -- a per-variant spread
+  // would reintroduce exactly the non-monotonicity that multiplier exists to kill
+  // (a 17 HP Reaper on level N+1 landing softer than a 22 HP Colossus on level N).
+  // Speed, attack cadence, reach and silhouette carry each one's character instead.
+  //
+  // Order matters: index 0 is the level-1 guardian and the list rotates by level.
+  // The Colossus sits at index 4 so it first appears on level 5 with a tier-2 bow
+  // in hand rather than on level 3 against the starter bow.
   function getMinibossVariant(level) {
+    const hp=ETYPES.miniboss.hp;
     const variants=[
-      {name:'The Warden',tint:0xc15dff,stats:{hp:19,spd:0.68,dmg:28,acd:1.95,ar:1.4,sx:1.22,sy:1.2}},
-      {name:'The Reaper',tint:0x65b7ff,stats:{hp:17,spd:0.92,dmg:24,acd:1.35,ar:1.5,sx:1.12,sy:1.28}},
-      {name:'The Hexer',tint:0x75e69b,stats:{hp:19,spd:0.62,dmg:26,acd:1.05,ar:1.35,sx:1.2,sy:1.24}},
-      {name:'The Dread Knight',tint:0xff4d70,stats:{hp:21,spd:0.76,dmg:33,acd:1.55,ar:1.55,sx:1.34,sy:1.3}},
-      {name:'The Colossus',tint:0xff7a32,stats:{hp:22,spd:0.42,dmg:36,acd:2.3,ar:1.55,sx:1.48,sy:1.38}},
-      {name:'The Necromancer',tint:0x8fffb0,stats:{hp:19,spd:0.66,dmg:25,acd:1.0,ar:1.4,sx:1.18,sy:1.26}},
+      {name:'The Warden',tint:0xc15dff,stats:{hp,spd:0.68,dmg:28,acd:1.95,ar:1.4,sx:1.22,sy:1.2}},
+      {name:'The Reaper',tint:0x65b7ff,stats:{hp,spd:0.92,dmg:24,acd:1.35,ar:1.5,sx:1.12,sy:1.28}},
+      {name:'The Hexer',tint:0x75e69b,stats:{hp,spd:0.62,dmg:26,acd:1.05,ar:1.35,sx:1.2,sy:1.24}},
+      {name:'The Dread Knight',tint:0xff4d70,stats:{hp,spd:0.76,dmg:33,acd:1.55,ar:1.55,sx:1.34,sy:1.3}},
+      {name:'The Colossus',tint:0xff7a32,stats:{hp,spd:0.42,dmg:36,acd:2.3,ar:1.55,sx:1.48,sy:1.38}},
+      {name:'The Necromancer',tint:0x8fffb0,stats:{hp,spd:0.66,dmg:25,acd:1.0,ar:1.4,sx:1.18,sy:1.26}},
     ];
+    // Level 15 closes the campaign, so it gets a dedicated finale guardian instead
+    // of whatever the rotation happened to land on (it used to draw The Hexer).
+    if (level+1===CORE_LEVELS)
+      return {name:'The Dreadkeep Sovereign',tint:0xffd24a,
+              stats:{hp,spd:0.82,dmg:38,acd:1.5,ar:1.6,sx:1.52,sy:1.44}};
     return variants[level%variants.length];
   }
 
@@ -649,41 +680,72 @@ function initSector93() {
     return { gunTier, armorTier };
   }
 
-  const MOB_MAP_CAPS = [0, 2, 4];
+  // ── Bestiary schedule ───────────────────────────────────────────────────────
+  // What you fight is the main difficulty curve, so it is driven by LEVEL.
+  //
+  // It used to be driven by `mapSlot` (= idx % 3) behind a MOB_MAP_CAPS table, and
+  // that produced a permanent three-level saw: slot 0 was capped at the grunt /
+  // soldier pool *forever*, so levels 1, 4, 7, 10, 13, 16, 19... never spawned
+  // anything else no matter how deep you were. Level 13 fought the same bestiary as
+  // level 1 while level 12 fielded fiends. On top of that the unlock tier was
+  // `min(4, floor(level/3))`, so the roster stopped growing entirely after level 12
+  // and goliaths did not appear until level 15 -- the last level of the campaign.
+  //
+  // Now each type has an introduction level and a weight curve. Types ramp in over
+  // a couple of levels, and the early trash *fades* so it is displaced rather than
+  // merely diluted -- grunts are 100% of the pool on level 1 and 3% by level 15.
+  //   intro: first level it can appear   full: level its weight peaks
+  //   fade:  level its weight starts decaying (0 = never)   peak: weight at full
+  const MOB_ROSTER = [
+    { type:'grunt',   intro:1,  full:1,  fade:4,  peak:10  },
+    { type:'soldier', intro:2,  full:3,  fade:9,  peak:8   },
+    { type:'hound',   intro:3,  full:4,  fade:11, peak:6   },
+    { type:'spectre', intro:5,  full:6,  fade:12, peak:6   },
+    { type:'brute',   intro:6,  full:8,  fade:0,  peak:5   },
+    { type:'warlock', intro:8,  full:9,  fade:0,  peak:3.5 },
+    { type:'fiend',   intro:10, full:12, fade:0,  peak:5   },
+    { type:'goliath', intro:12, full:14, fade:0,  peak:3.5 },
+  ];
 
-  function getMobSpawnPool(level, mapSlot, preferHard=false) {
-    const unlockTier = Math.min(4, Math.floor(level/3));
-    const mapCap = MOB_MAP_CAPS[mapSlot] ?? 4;
-    const tier = Math.min(unlockTier, mapCap);
-    const basePools = [
-      ['grunt','grunt','grunt','soldier','soldier'],
-      ['grunt','grunt','soldier','soldier','brute'],
-      ['grunt','soldier','brute','spectre'],
-    ];
-    const pool = [...(basePools[mapSlot] || basePools[2])];
+  // mapSlot is now pure flavour: it tilts the mix so the three atmospheres feel
+  // distinct, but it can no longer gate a type out of a level entirely.
+  //   0 garrison — disciplined ranks: soldiers and brutes
+  //   1 haunt    — fast and unnatural: hounds, spectres, warlocks
+  //   2 infernal — the heavy end: fiends, goliaths
+  const MOB_SLOT_BIAS = [
+    { soldier:1.5, brute:1.3, grunt:1.2, spectre:0.6, fiend:0.7 },
+    { spectre:1.6, hound:1.5, warlock:1.4, soldier:0.7 },
+    { fiend:1.6, goliath:1.5, warlock:1.3, brute:1.2, grunt:0.7 },
+  ];
 
-    if (mapSlot >= 1 && tier >= 1) pool.push('brute','brute','spectre');
-    if (mapSlot >= 1 && tier >= 2) pool.push('spectre','spectre');
-    if (mapSlot >= 2 && tier >= 3) pool.push('fiend','fiend','spectre');
-    if (mapSlot >= 2 && tier >= 4) pool.push('goliath','goliath','fiend');
-
-    if (mapSlot === 1 && tier >= 3) pool.push('fiend');
-    if (mapSlot === 0 && tier >= 3) pool.push('brute');
-
-    // Fast hounds start swarming early; ranged warlocks join once levels open up.
-    if (tier >= 1) pool.push('hound','hound');
-    if (mapSlot >= 1 && tier >= 2) pool.push('warlock');
-    if (mapSlot >= 2 && tier >= 3) pool.push('warlock','hound');
-
-    const filtered = preferHard ? pool.filter(t => t !== 'grunt') : pool;
-    return filtered.length ? filtered : pool;
+  // Returns [{type, w}] for the level. Past the campaign the schedule is already
+  // saturated, so the endless run keeps the level-15 mix and leans on the stat
+  // multipliers instead of inventing types it does not have.
+  function getMobWeights(level, mapSlot, preferHard=false) {
+    const lv = Math.min(level+1, CORE_LEVELS);
+    const bias = MOB_SLOT_BIAS[mapSlot] || MOB_SLOT_BIAS[2];
+    const table = [];
+    for (const r of MOB_ROSTER) {
+      if (lv < r.intro) continue;
+      const ramp  = Math.max(0, Math.min((lv-r.intro+1)/(r.full-r.intro+1), 1));
+      const decay = r.fade ? Math.max(0.15, Math.min(1-(lv-r.fade)/6, 1)) : 1;
+      let w = r.peak * ramp * decay * (bias[r.type] ?? 1);
+      // The hallway guards and the hard pass want the nastier end of whatever is
+      // currently available. Weighting by HP beats the old `filter out grunts`,
+      // which on levels 1-2 could empty the pool completely.
+      if (preferHard) w *= Math.pow(ETYPES[r.type].hp, 0.75) / 3;
+      if (w > 0.01) table.push({ type:r.type, w });
+    }
+    return table.length ? table : [{ type:'grunt', w:1 }];
   }
 
   function pickMobType(level, mapSlot, seed, preferHard=false) {
-    const pool = getMobSpawnPool(level, mapSlot, preferHard);
+    const table = getMobWeights(level, mapSlot, preferHard);
+    const total = table.reduce((s,e)=>s+e.w, 0);
     const x = Math.sin(level*127.1 + mapSlot*61.7 + seed*311.7 + 1.5) * 43758.5453;
-    const frac = x - Math.floor(x);
-    return pool[Math.min(pool.length-1, Math.floor(frac * pool.length))];
+    let roll = (x - Math.floor(x)) * total;
+    for (const e of table) { roll -= e.w; if (roll <= 0) return e.type; }
+    return table[table.length-1].type;
   }
 
   // Seeded shuffle (no Math.random so results are stable per level)
@@ -5037,9 +5099,17 @@ function initSector93() {
     allEnemies.push({x:exitX,z:exitZ,type:'miniboss',variant:levelMinibossVariant});
     spawnEnemies(allEnemies, diff, spawnX, spawnZ);
 
-    // Pickups: base level pickups + map keys + bonus ammo on higher cycles
+    // Pickups: base level pickups + map keys + supply drops that scale with the
+    // level's enemy budget.
+    //
+    // This used to key off `cycle` (= floor(idx/3)) and grow without limit: two
+    // extra pickups per cycle meant ~18 of them by level 30, three quarters of
+    // which are 25 HP medkits. The endless run therefore got *more* sustainable
+    // the deeper it went, cancelling out the stat curve it is supposed to test.
+    // Supplies now track the number of enemies actually placed and stop climbing.
     const allPickups=[...(lvl.pickups||[]),...mapKeys];
-    if (cycle>0) {
+    const supplyDrops=Math.min(Math.max(0, Math.round(allEnemies.length/6) - 1), 7);
+    if (supplyDrops>0) {
       const bonusCells=[];
       for(let ez=2;ez<worldH-2;ez+=3) for(let ex=2;ex<worldW-2;ex+=3)
         if(!isSolid(currentMap[ez][ex])) {
@@ -5048,9 +5118,12 @@ function initSector93() {
           if(!tooCloseToKey) bonusCells.push({x:ex+0.5,z:ez+0.5});
         }
       sShuf(bonusCells, idx*53+11);
-      const bonusCount=Math.min(cycle*2, bonusCells.length);
+      const bonusCount=Math.min(supplyDrops, bonusCells.length);
+      // Weighted toward ammo rather than the old 3:1 medkit split -- arrows are the
+      // resource the late roster actually drains, and healing was the thing making
+      // deep levels soft.
       for(let i=0;i<bonusCount;i++)
-        allPickups.push({x:bonusCells[i].x,z:bonusCells[i].z,type:i%4===0?'ammo':'medkit'});
+        allPickups.push({x:bonusCells[i].x,z:bonusCells[i].z,type:i%2===0?'ammo':'medkit'});
       if (diff.ammoBonus>0 && bonusCells.length>bonusCount) {
         const ammoCount=Math.min(Math.max(1,Math.floor(diff.ammoBonus/2)), bonusCells.length-bonusCount);
         for(let i=0;i<ammoCount;i++)
@@ -6028,10 +6101,13 @@ function initSector93() {
     startPr.classList.add('hidden'); stateOv.classList.remove('hidden'); stBtn.style.display='';
     if (leaderboardWrap) leaderboardWrap.style.display='none';
     if (ns==='level-complete'){
-      stTitle.textContent=`Level ${currentLevel+1} Clear`;
+      // Clearing level 15 is the end of the designed campaign, so it gets its own
+      // beat rather than sliding silently into the endless run.
+      const finishedCampaign=currentLevel+1===CORE_LEVELS;
+      stTitle.textContent=finishedCampaign?'The Dreadkeep Falls':`Level ${currentLevel+1} Clear`;
       stStats.textContent=payload.stats||'';
       stBtn.style.display='none';
-      statusEl.textContent='Preparing next level\u2026';
+      statusEl.textContent=finishedCampaign?'Beyond the keep\u2026':'Preparing next level\u2026';
       return;
     }
     if (ns==='gameover'){
@@ -6053,7 +6129,10 @@ function initSector93() {
   function onLevelComplete() {
     if (gameState!=='playing') return;
     sfx.levelClear();
-    setGameState('level-complete',{stats:`Kills: ${player.levelKills}\nAmmo left: ${player.ammo}\nLevel ${currentLevel+2} incoming\u2026`});
+    const tail=currentLevel+1===CORE_LEVELS
+      ? `You have broken the Dreadkeep.\nWhat lies past level ${CORE_LEVELS} answers to nothing\u2014\nno map, no mercy, no end.`
+      : `Level ${currentLevel+2} incoming\u2026`;
+    setGameState('level-complete',{stats:`Kills: ${player.levelKills}\nAmmo left: ${player.ammo}\n${tail}`});
     advTimer=setTimeout(()=>{
       currentLevel++;
       loadLevel(currentLevel,true);

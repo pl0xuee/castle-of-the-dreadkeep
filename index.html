@@ -326,6 +326,7 @@
         <div id="lbMsg"></div>
         <ul id="lbList"></ul>
       </div>
+      <button id="stContinue" class="secondary-button" type="button" hidden>Continue</button>
       <button id="stBtn" type="button">Play Again</button>
     </div>
   </div>
@@ -381,6 +382,7 @@ function initSector93() {
   const settingsToggle = document.getElementById('settingsToggle');
   const settingsPanel = document.getElementById('settingsPanel');
   const settingsDone = document.getElementById('settingsDone');
+  const stContinue = document.getElementById('stContinue');
   const restartCountdown = document.getElementById('restartCountdown');
   const restartCountdownValue = document.getElementById('restartCountdownValue');
   const musicVolume = document.getElementById('musicVolume');
@@ -1005,6 +1007,46 @@ function initSector93() {
 
   const ARMOR_NAMES=armorNames;
   const ARMOR_ABSORB=armorAbsorb;
+  // ── Run checkpoints ─────────────────────────────────────────────────────────
+  // Nothing about a run was ever persisted, so dying on level 14 sent the player
+  // back to level 1 with no gear -- discarding the better part of an hour -- and
+  // quitting the app threw the run away entirely. A checkpoint is written on
+  // entering each level, holding the state the player arrived with.
+  //
+  // Restoring costs you the level you died on, not the whole campaign. Continues
+  // are counted and shown, so a continued run is never passed off as a clean one.
+  const RUN_KEY='sector93.run.v1';
+  function saveRun(){
+    try{
+      localStorage.setItem(RUN_KEY,JSON.stringify({
+        v:1, level:currentLevel,
+        gunTier:player.gunTier, armorTier:player.armorTier,
+        health:player.health, ammo:player.ammo,
+        campaignKills:player.campaignKills, upgrades:player.upgrades,
+        continues:runContinues,
+      }));
+    }catch(_){}
+  }
+  function loadRun(){
+    try{
+      const r=JSON.parse(localStorage.getItem(RUN_KEY)||'null');
+      if(!r||r.v!==1) return null;
+      // Validate before trusting it: this is user-writable storage, and a bad
+      // level index or tier would propagate straight into level generation and
+      // the weapon/armour lookup tables.
+      const int=(x,lo,hi,dflt)=>(typeof x==='number'&&isFinite(x)&&x>=lo&&x<=hi)?Math.floor(x):dflt;
+      return {
+        level:int(r.level,0,9999,0),
+        gunTier:int(r.gunTier,0,6,0), armorTier:int(r.armorTier,0,6,0),
+        health:int(r.health,1,100,100), ammo:int(r.ammo,0,player.maxAmmo,30),
+        campaignKills:int(r.campaignKills,0,1e7,0), upgrades:int(r.upgrades,0,999,0),
+        continues:int(r.continues,0,999,0),
+      };
+    }catch(_){ return null; }
+  }
+  function clearRun(){ try{ localStorage.removeItem(RUN_KEY); }catch(_){} }
+  let runContinues=0;
+
   const LEADERBOARD_KEY='sector93.leaderboard.v1';
   const LEADERBOARD_LIMIT=20;
 
@@ -6485,6 +6527,7 @@ function initSector93() {
     if (ns==='playing'){gameActive=true;startPr.classList.add('hidden');stateOv.classList.add('hidden');return;}
     if (ns==='start'){startPr.classList.remove('hidden');stateOv.classList.add('hidden');statusEl.textContent=`Level ${currentLevel+1} — click to engage`;return;}
     startPr.classList.add('hidden'); stateOv.classList.remove('hidden'); stBtn.style.display='';
+    stContinue.hidden=true;
     if (leaderboardWrap) leaderboardWrap.style.display='none';
     if (ns==='level-complete'){
       // Clearing level 15 is the end of the designed campaign, so it gets its own
@@ -6502,8 +6545,17 @@ function initSector93() {
       stTitle.textContent='You Died';
       const levelCount=currentLevel+1;
       const upgradeCount=player.upgrades||0;
-      stStats.textContent=`Reached Level: ${levelCount}\nTotal Kills: ${player.campaignKills}\nUpgrades: ${upgradeCount}\nKeep pushing — enemies grow\nhunger the deeper you go.`;
-      stBtn.textContent='Play Again';
+      const contLine=runContinues>0?`\nContinues used: ${runContinues}`:'';
+      stStats.textContent=`Reached Level: ${levelCount}\nTotal Kills: ${player.campaignKills}\nUpgrades: ${upgradeCount}${contLine}\nKeep pushing — enemies grow\nhunger the deeper you go.`;
+      stBtn.textContent='New Run';
+      // Offer the checkpoint rather than sending an hour-long run back to level 1.
+      const ck=loadRun();
+      if (ck && ck.level>0) {
+        stContinue.hidden=false;
+        stContinue.textContent=`Continue \u2014 Level ${ck.level+1}`;
+      } else {
+        stContinue.hidden=true;
+      }
       pendingLeaderboardPayload={name: lbName?.value||'', kills:player.campaignKills, upgrades:upgradeCount, levels:levelCount};
       leaderboardMessage('Enter a name and save your score.');
       if (!leaderboardLoaded) loadLeaderboard();
@@ -6522,6 +6574,7 @@ function initSector93() {
     advTimer=setTimeout(()=>{
       currentLevel++;
       loadLevel(currentLevel,true);
+      saveRun();   // checkpoint the state the player arrives with
       setGameState('playing');
       if (renderer.domElement.requestPointerLock&&document.pointerLockElement!==renderer.domElement)
         try{renderer.domElement.requestPointerLock();}catch(_){}
@@ -6756,6 +6809,36 @@ function initSector93() {
   settingsDone.addEventListener('click',ev=>{
     ev.stopPropagation(); settingsPanel.hidden=true; settingsToggle.setAttribute('aria-expanded','false');
   });
+  // Resume from the last checkpoint: rebuild the level the player entered and
+  // restore the gear/health/ammo they had on arrival. The level they died on is
+  // replayed -- the run is not handed back for free.
+  stContinue.addEventListener('click',ev=>{
+    ev.stopPropagation();
+    const ck=loadRun();
+    if(!ck){ stContinue.hidden=true; return; }
+    if (advTimer){clearTimeout(advTimer);advTimer=null;}
+    if (restartStepTimer){clearInterval(restartStepTimer);restartStepTimer=null;}
+    restartTimer=null; restartCountdown.hidden=true;
+    _stopMusic();
+    runContinues=ck.continues+1;
+    currentLevel=ck.level;
+    Object.assign(player,{
+      health:ck.health, ammo:ck.ammo, gunTier:ck.gunTier, armorTier:ck.armorTier,
+      campaignKills:ck.campaignKills, upgrades:ck.upgrades,
+      levelKills:0, hasKey:false, recoil:0, shootCd:0, meleeCd:0, weaponMode:2,
+      dmgTimer:0, moving:false, y:0, vy:0, grounded:true,
+    });
+    muzzleLight.intensity=0; shake.sT=shake.hT=0;
+    hFlash.style.opacity=sFlash.style.opacity=pkFlash.style.opacity='0';
+    pendingLeaderboardPayload=null;
+    stateOv.classList.add('hidden');
+    stContinue.hidden=true;
+    _frameErrors=0;
+    loadLevel(currentLevel,true);
+    saveRun();
+    setGameState('playing');
+    lockPointer();
+  });
   startBtn.addEventListener('click',ev=>{ev.stopPropagation();if(!settingsPanel.hidden){settingsPanel.hidden=true;settingsToggle.setAttribute('aria-expanded','false');return;}lockPointer();});
   stBtn.addEventListener('click',resetGame);
   lbForm?.addEventListener('submit',async ev=>{
@@ -6856,6 +6939,8 @@ function initSector93() {
     if (advTimer){clearTimeout(advTimer);advTimer=null;}
     _stopMusic();
     currentLevel=0; pendingLock=false;
+    // A new run must not inherit the dead run's checkpoint.
+    clearRun(); runContinues=0;
     Object.assign(player,{x:1.5,z:1.5,yaw:0,pitch:0,health:100,ammo:30,hasKey:false,
       levelKills:0,campaignKills:0,recoil:0,bobPhase:0,shootCd:0,meleeCd:0,weaponMode:2,dmgTimer:0,moving:false,gunTier:0,armorTier:0,upgrades:0,y:0,vy:0,grounded:true});
     muzzleLight.intensity=0; shake.sT=shake.hT=0;
@@ -7065,7 +7150,23 @@ function initSector93() {
 
 
   // ── Boot ─────────────────────────────────────────────────────────────────────
-  loadLevel(0,false);
+  // Pick the run back up where it was left. Quitting used to discard progress
+  // outright; a checkpoint from a previous session simply resumes here, and the
+  // start screen already announces which level you are about to enter.
+  (function bootRun(){
+    const ck=loadRun();
+    if (ck && ck.level>0) {
+      currentLevel=ck.level;
+      runContinues=ck.continues;
+      Object.assign(player,{
+        health:ck.health, ammo:ck.ammo, gunTier:ck.gunTier, armorTier:ck.armorTier,
+        campaignKills:ck.campaignKills, upgrades:ck.upgrades,
+      });
+      loadLevel(currentLevel,true);
+    } else {
+      loadLevel(0,false);
+    }
+  })();
   setGameState('start');
   onResize(true);
   updateHud();
